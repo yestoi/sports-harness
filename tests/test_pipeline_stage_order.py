@@ -20,7 +20,10 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from harness.db.models import FairValue, Game, MarketGapSnapshot, OddsSnapshot, Run, Signal, VenueMarket, VenueQuote
+from sqlalchemy import text as sa_text
+
+from harness.db.models import (CoverageSample, FairValue, Game, MarketGapSnapshot, OddsSnapshot,
+                              Run, Signal, VenueMarket, VenueQuote)
 from harness.matching.teams import seed_teams_from_espn
 from harness.pricing.fair import compute_fair_values
 from harness.pricing.gaps import build_gap_snapshots
@@ -178,6 +181,37 @@ def _candidate_rows(session, run_id):
             if row["decision"] == "candidate"}
 
 
+def _coverage_counts(session, run_id):
+    """{variant_id: {outcome: n}} for this run's `evaluation`-domain coverage_samples rows,
+    aggregated across every cell -- fix 87's tests care about the per-variant total closed
+    against the per-variant total scheduled, not which cell a unit landed in."""
+    out: dict[str, dict[str, int]] = {}
+    for row in session.query(CoverageSample).filter_by(run_id=run_id, domain="evaluation"):
+        out.setdefault(row.variant_id, {})
+        out[row.variant_id][row.outcome] = out[row.variant_id].get(row.outcome, 0) + row.n
+    return out
+
+
+def _unclosed_evaluation_cells(session):
+    """Sec 3 row 2's reconciliation query (verbatim from `tests/test_coverage_samples.py`'s
+    `_unclosed`, restated here so this file stays self-contained): every scheduled cell with no
+    non-scheduled row matching its five cell columns. Time-bounded for freshly stamped rows."""
+    return session.execute(sa_text("""
+        select s.run_id, s.sport, s.ttk_bucket, s.feed, s.market_type, s.variant_id, s.ts
+        from coverage_samples s
+        where s.domain = 'evaluation' and s.outcome = 'scheduled'
+          and s.ts > now() - interval '24 hours'
+          and not exists (
+            select 1 from coverage_samples c
+            where c.run_id = s.run_id and c.domain = s.domain and c.outcome <> 'scheduled'
+              and c.sport is not distinct from s.sport
+              and c.ttk_bucket is not distinct from s.ttk_bucket
+              and c.feed is not distinct from s.feed
+              and c.market_type is not distinct from s.market_type
+              and c.variant_id is not distinct from s.variant_id)
+    """)).all()
+
+
 @pytest.mark.parametrize("gate", ["sharp_direct", "sharp_two_sided", "sharp_plus_derived"])
 def test_the_stage_order_produces_exactly_what_the_single_pass_produced(
         env_settings, db_session, monkeypatch, gate):
@@ -318,6 +352,100 @@ def test_a_budget_that_dies_after_the_direct_variants_still_scored_the_gate_and_
     assert [by_name[n]["cause"] for n in ("fair_derived", "gaps_derived", "variants_derived")] == [
         "budget", "budget", "budget"]
     assert by_name["variants_direct"]["units"] > 0
+
+
+#: Fix 87. The six direct-only variants (everything but `sharp_plus_derived`), by name -- the
+#: set every early exit below either scores in full or leaves unscored.
+_DIRECT_ONLY_NAMES = {"sharp_direct", "sharp_two_sided", "constrained", "nfl_only",
+                      "no_velocity", "wide_band"}
+
+
+@pytest.mark.parametrize(
+    "budget_s, expected_status, expected_scored",
+    [
+        pytest.param(5, ["ran", "ran", "ran", "skipped", "skipped", "skipped"],
+                     {"sharp_direct"}, id="mid_variants_direct_loop"),
+        pytest.param(20, ["ran", "ran", "ran", "skipped", "skipped", "skipped"],
+                     _DIRECT_ONLY_NAMES, id="right_after_variants_direct"),
+        pytest.param(22, ["ran", "ran", "ran", "ran", "skipped", "skipped"],
+                     _DIRECT_ONLY_NAMES, id="after_fair_derived"),
+        pytest.param(23, ["ran", "ran", "ran", "ran", "ran", "skipped"],
+                     _DIRECT_ONLY_NAMES, id="after_gaps_derived"),
+    ])
+def test_an_exhausted_tick_closes_every_scheduled_cell_it_leaves_behind(
+        env_settings, db_session, monkeypatch, budget_s, expected_status, expected_scored):
+    """Fix 87 (fixes.md row 87, journal 275). The scheduled rows are written and committed
+    right after the direct gap build; four early `return finish()` exits between that write and
+    the end of stage 6 used to leave their still-scheduled cells open forever. Each `budget_s`
+    here is tuned (Amendment 4's `time.monotonic` counter, same technique as
+    `test_a_budget_that_dies_after_the_direct_variants_still_scored_the_gate_and_the_primary`)
+    to trip the deadline check at one specific exit; `expected_status` is that exit's stage
+    signature, asserted first so a budget_s drifting off its exit fails loudly rather than
+    quietly passing the wrong case.
+
+    Computed by hand from the seven registered production variants: `sharp_direct` is the gate
+    and the only primary, so `pricing_order`'s head is `[sharp_direct]` alone and `priority` is
+    the six direct-only variants in an order this test does not depend on. `budget_s=5` trips
+    the deadline on the loop's second iteration, after `sharp_direct` alone has scored; `20`,
+    `22` and `23` each let the whole loop finish (all six direct-only variants scored) and then
+    trip after `variants_direct`, after `fair_derived` and after `gaps_derived` respectively --
+    `sharp_plus_derived`, the only derived consumer, is scored in none of them.
+    """
+    game, markets = _seed(db_session)
+    register_variants(db_session, load_variants(PROD_VARIANTS), NOW, prune=True)
+    run = _seed_run(db_session, game, markets, NOW)
+
+    counter = itertools.count()
+    monkeypatch.setattr(pipeline_module.time, "monotonic", lambda: next(counter))
+
+    result = price_and_signal(db_session, run.id, NOW, env_settings, budget_s=budget_s)
+    db_session.commit()
+
+    assert result["budget_exhausted"] is True
+    by_name = {s["name"]: s for s in result["stages"]}
+    assert [by_name[n]["status"] for n in STAGE_NAMES] == expected_status
+    assert set(result["variants_run"]) == expected_scored
+
+    all_variants = {v.name: v for v in active_variants(db_session)}
+    unscored = set(all_variants) - expected_scored
+    assert unscored  # every case here leaves at least one variant unscored
+
+    counts = _coverage_counts(db_session, run.id)
+    for name, variant in all_variants.items():
+        vid = variant.variant_id
+        scheduled_n = counts.get(vid, {}).get("scheduled", 0)
+        assert scheduled_n > 0, name
+        closed_n = sum(n for outcome, n in counts.get(vid, {}).items() if outcome != "scheduled")
+        assert closed_n == scheduled_n, name
+        if name in unscored:
+            assert set(counts[vid]) - {"scheduled"} == {"budget_stage_skipped"}, name
+        else:
+            assert "budget_stage_skipped" not in counts.get(vid, {}), name
+
+    assert _unclosed_evaluation_cells(db_session) == []
+
+
+def test_the_completion_write_happens_exactly_once_on_the_full_path(env_settings, db_session):
+    """Fix 87, rule 2. The full path -- budget to spare, every stage runs to the end -- must
+    not double the completion rows: a second `coverage.record` call over the same cells would
+    make the closed total twice the scheduled one, which the per-variant sum-equality below
+    would catch immediately."""
+    game, markets = _seed(db_session)
+    register_variants(db_session, load_variants(PROD_VARIANTS), NOW, prune=True)
+    run = _seed_run(db_session, game, markets, NOW)
+
+    result = price_and_signal(db_session, run.id, NOW, env_settings, budget_s=600)
+    db_session.commit()
+
+    assert result["budget_exhausted"] is False
+    counts = _coverage_counts(db_session, run.id)
+    for variant in active_variants(db_session):
+        vid = variant.variant_id
+        scheduled_n = counts.get(vid, {}).get("scheduled", 0)
+        closed_n = sum(n for outcome, n in counts.get(vid, {}).items() if outcome != "scheduled")
+        assert scheduled_n > 0, variant.name
+        assert closed_n == scheduled_n, variant.name
+    assert _unclosed_evaluation_cells(db_session) == []
 
 
 def test_a_suppressed_direct_only_variant_is_marked_complete(env_settings, db_session):

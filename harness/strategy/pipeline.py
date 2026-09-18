@@ -491,6 +491,33 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
         # "Scheduled before the work" has to mean durable before the work.
         session.commit()
 
+    #: Fix 87 (fixes.md row 87, journal 275). Four early exits between the scheduled write above
+    #: and the end of stage 6 used to `return finish()` with no completion write at all, leaving
+    #: every one of that run's scheduled cells open forever -- verify.md's zero-unexplained-
+    #: omissions row named 98 such cells on run 24413. `close_coverage` is the one completion
+    #: call (6D §1.1), guarded to run at most once per run and only when the scheduled write
+    #: above actually ran: every exit after this point -- the early ones below and the existing
+    #: end-of-stage-6 site -- calls it instead of writing `evaluation_completion_rows` inline.
+    #: `budget_exhausted=result["budget_exhausted"]` is True at every early exit, so a variant
+    #: this run never reached scores `budget_stage_skipped` on every one of its cells (the coded
+    #: outcome `evaluation_completion_rows` already carries); a variant that did score keeps
+    #: whatever `completed`/`no_fair`/`no_gap`/`no_signal` verdict the existing rules give it.
+    coverage_closed = False
+
+    def close_coverage(gapped: set[int]) -> None:
+        nonlocal coverage_closed
+        if coverage_closed or not ordered:
+            return
+        coverage_closed = True
+        coverage.record(
+            session, run_id, coverage.DOMAIN_EVALUATION,
+            coverage.evaluation_completion_rows(
+                coverage_cells, coverage_variants, coverage_outcomes,
+                gapped=gapped,
+                scored={v.variant_id for v in ordered if v.name in scored},
+                budget_exhausted=result["budget_exhausted"],
+                overdue_ms=int((_stage_clock() - coverage_at) * 1000)))
+
     direct_units = 0
     for variant in priority:
         if not ok():
@@ -502,6 +529,7 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
             stages.skip(*STAGE_NAMES[3:], cause="budget")
             record_order()
             result["fair_derived_skipped"] = True
+            close_coverage({row.venue_market_id for row in direct_rows})
             return finish()
         direct_units += score(variant, direct_rows, full=direct_complete)
     stages.record("variants_direct", t0, units=direct_units)
@@ -511,6 +539,7 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
         result["budget_exhausted"] = True
         result["fair_derived_skipped"] = True
         stages.skip(*STAGE_NAMES[3:], cause="budget")
+        close_coverage({row.venue_market_id for row in direct_rows})
         return finish()
 
     t0 = stages.start("fair_derived", remaining_ms())
@@ -525,6 +554,7 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
     if not ok():
         result["budget_exhausted"] = True
         stages.skip(*STAGE_NAMES[4:], cause="budget")
+        close_coverage({row.venue_market_id for row in direct_rows})
         return finish()
 
     t0 = stages.start("gaps_derived", remaining_ms())
@@ -538,6 +568,7 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
         result["budget_exhausted"] = True
         stages.skip("variants_derived", cause="budget")
         record_order()
+        close_coverage({row.venue_market_id for row in direct_rows})
         return finish()
 
     # Stage 6 scores the derived consumers over the complete row set. It no longer re-scores a
@@ -612,15 +643,7 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
     # 6D §1.1: the completion rows for exactly the units scheduled above. `gapped` is the
     # markets that ended the run with a gap row, which is what separates `no_gap` from
     # `no_signal`; the second `_load_gap_rows` result is already in `all_rows`.
-    if ordered:
-        coverage.record(
-            session, run_id, coverage.DOMAIN_EVALUATION,
-            coverage.evaluation_completion_rows(
-                coverage_cells, coverage_variants, coverage_outcomes,
-                gapped={row.venue_market_id for row in all_rows},
-                scored={v.variant_id for v in ordered if v.name in scored},
-                budget_exhausted=result["budget_exhausted"],
-                overdue_ms=int((_stage_clock() - coverage_at) * 1000)))
+    close_coverage({row.venue_market_id for row in all_rows})
 
     # 6D §1.7(b): one multi-row upsert per run, never one per key.
     if candidate_keys:
