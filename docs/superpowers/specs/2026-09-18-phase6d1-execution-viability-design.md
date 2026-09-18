@@ -1,16 +1,26 @@
 # Phase 6D.1 design addendum: execution viability experiment (stateful policy comparison, observation/holding tradeoff, book-health diagnosis, independent veto pacing, feasibility forecast)
 
-Date 2026-09-18. **Revision 1** (supersedes the adopted draft of 2026-09-18, which stated scope and constraints and named no
-interface, table, file, test or verify row). Author: autopilot (design author, opus). Amends
-`docs/superpowers/specs/2026-09-06-sportsbook-harness-design.md` (v2) §4.1, §5.5, §6.7, §7.1, §7.2, §9.2, §9.3, §9.5, §11, §12 and
+**Revision 2, 2026-09-18** - applies every ruling of the controller's design rulings (2026-09-18 13:54 CT), copied verbatim in
+**§Rulings**: the recorded-clock premise is replaced by the retained action instants (C1, I1), the isolation gains a
+server-enforced privilege boundary (C2), two tables are declared and the raw-body table is removed (I5), three verify rows are
+made runnable (I6-I8), the observer's shared aggregate becomes the provider balance (I9), and the two dropped draft sentences
+are restored (I13); revision 1 was reviewed in `.superpowers/sdd/results/design-6d1-review.md`. Revision 1 superseded the adopted
+draft of 2026-09-18, which stated scope and constraints and named no interface, table, file, test or verify row. Author:
+autopilot (design author, opus). Amends
+`docs/superpowers/specs/2026-09-06-sportsbook-harness-design.md` (v2) §4.1, §5.5, §6.7, §7.1, §7.2, §9.2, §9.3, §9.5, §11,
+§12 and
 §15 for milestone 6D.1.
 **Approval: the roadmap's standing authorization dated 2026-09-07** (`docs/superpowers/autopilot/roadmap.md`, "Standing
 authorizations": "Brainstorm, plan, and execute phases 4, 5, 6 without waiting", decisions from the tables or the model's
-judgment, each recorded in §8) under decision **U10** (user-directed, 2026-09-18) and **U8** (2026-09-11, the phase 6 programme).
+judgment, each recorded in §8) under decision **U10** (user-directed, 2026-09-18) and **U8** (2026-09-11, the phase 6
+programme).
 Consumes U10 in full, the 6D.1 row of the Phases table ("isolated implementation and bounded reads authorized; historical runs
-need 6B inputs and baseline proof; prospective activation needs a frozen manifest, budget/coverage preflight and existing release
-rules; production holding-policy adoption remains the user's dated decision"), pre-loaded decision 4's **U10 follow-on** sentence
-and pre-loaded decision 6 (6F), the [confirmed live-data review](../autopilot/reports/2026-09-18-fill-starvation-review-confirmed.md)
+need 6B inputs and baseline proof; prospective activation needs a frozen manifest, budget/coverage preflight and existing
+release
+rules; production holding-policy adoption remains the user's dated decision"), pre-loaded decision 4's **U10 follow-on**
+sentence
+and pre-loaded decision 6 (6F), the [confirmed live-data
+review](../autopilot/reports/2026-09-18-fill-starvation-review-confirmed.md)
 and its evidence files, the [veto pacing brief](../autopilot/reports/2026-09-18-veto-pacing-brief.md), the
 [expiry-cohort design read](../autopilot/reports/2026-09-18-expiry-cohort-design-read.md) (row 86: the per-row `book_query` cost
 bounds any book verification designed here), the 6D addendum §0.9, §0.15, §1.6 and §1.7, the 6B addendum's carve-outs (D15's
@@ -24,7 +34,8 @@ defaults below are implementation choices made in response, not quotations of ch
 here asserts that the experiment has run**: no collector is active, no cohort is frozen, no policy is adopted and no veto
 sampling has changed.
 
-**Posture.** Paper throughout. **R1 stands**: no gate criterion, threshold, benchmark or BH family, cell grid, success threshold,
+**Posture.** Paper throughout. **R1 stands**: no gate criterion, threshold, benchmark or BH family, cell grid, success
+threshold,
 confirmation cut-off or eligibility rule changes here; no registered `variant_id`, `MAX_PRIMARY`, `MAX_SECONDARY` or file under
 `harness/variants/` is touched (invariants 1 and 2); the eight registered ids of the live facts stand. **Anything registered
 after Mon 2026-09-21 09:00 CT is exploratory and is labelled so** wherever it is reported (6D §1.6c), and this milestone
@@ -42,10 +53,15 @@ change is additive (invariant 5); no cadence, `ODDS_API_BOOKMAKERS` or alternate
 (`sharp_direct` primary, `sharp_two_sided` gate secondary, `sharp_two_sided#e82fcd0a1e99` replay, five more secondaries); (c)
 database 150 GB, top tables `orderbook_events_y2026w37` 79 GB, `_y2026w38` 17 GB, `orderbook_events_legacy` 15 GB, `signals`
 14 GB, `odds_snapshots` 8,319 MB, `fair_values` 3,850 MB, `orders` 1,294 MB; (d) games scheduled in the next 7 days: 75 NCAAF
-and 16 NFL, of which **56 NCAAF and 15 NFL have kickoff 24-120 h out** - the cohort window of §1.6c; (e) today's veto spend rows:
+and 16 NFL, of which **56 NCAAF and 15 NFL have kickoff 24-120 h out** - the cohort window of §1.6f; (e) today's veto spend
+rows:
 207 `claude-opus-5` calls and 207 `claude-sonnet-5` calls; `veto_queue` 185,203 rows; 182,703 `veto_decisions` in 7 days; (f)
-executor loop over 24 h: 1,158 loops, p50 **16,759 ms**, p95 **24,165 ms** against a 15 s period - the resource fact that makes
-§4's quiet-window and cooperative-limit rules binding; (g) `alembic_version` on production is `0013_nw_executor_version` while
+`exec.loop_ms` over 24 h: **1,158 samples, not 1,158 loops** - `_write_metric_batch` returns early unless
+`Sampler(metric_sample_s)` is due and `Settings.metric_sample_s = 60`, so one row exists per at least 60 s (86,400 / 1,158 =
+74.6 s, i.e. 60 s of sampler plus one loop of run time) and the executor actually stepped roughly 3,500-5,000 times that day -
+with p50 **16,759 ms** and p95 **24,165 ms** against a 15 s period; the loop-time figures are the resource fact that makes
+§4's quiet-window and cooperative-limit rules binding and the sample count is the fact §1.3d builds the replay clock around
+(C1); (g) `alembic_version` on production is `0013_nw_executor_version` while
 `main` carries `0014_orders_intent_index` (fix 85, merged and held for Monday's full release), so this milestone's migration is
 the **second** unreleased one. From the confirmed review and its evidence: 39,086 of 40,023 orders cancelled `fair_stale`
 (97.66 %), median stale-cancel lifetime 225 s against a frozen 220 s allowance on every order; 617 sampled orders all past their
@@ -74,21 +90,25 @@ historical book reconstruction costs a 0.3 ms snapshot lookup plus **233 ms for 
   capability evidence, decision report and any required policy adoption before opening its formal prospective period. Nothing in
   6D's existing acceptance paragraph is restated as 6D.1's.
 - **0.2 (§9.2, §12; 6D §1.6b) The legacy `policy-compare` filled column may not select a holding policy or forecast a gate
-  date.** `harness/execution/policy.py::compare` states three limitations in its own docstring: every policy starts from an empty
+  date.** `harness/execution/policy.py::compare` states three limitations in its own docstring: every policy starts from an
+  empty
   open-order set and an empty exposure state (`store.working_orders` carries no `at` horizon), `rest_to_expiry` and
-  `per_variant_slots` are in `NOT_EXERCISED` and cannot move a result, and no book is rebuilt (`_market_now` sets `book = None`).
+  `per_variant_slots` are in `NOT_EXERCISED` and cannot move a result, and no book is rebuilt (`_market_now` sets `book =
+  None`).
   Its `queue_filled_orders` is **read from the record** for orders the live policy actually placed, so it can describe admission
   and never alternative-fill performance. 6D.1 supersedes it for that question only: `compare`, its CLI command, its tests and
   its `NOT_EXERCISED_NOTE` stay exactly as they are, and §1.1's help text and report labels distinguish the two instruments.
-- **0.3 (§9.5, §6.7) No gate definition, benchmark or BH family, hypothesis threshold, frozen variant id, bankroll, spend ceiling
+- **0.3 (§9.5, §6.7) No gate definition, benchmark or BH family, hypothesis threshold, frozen variant id, bankroll, spend
+ceiling
   or release ruling changes.** The September 21 registration cutoff is not extended: a later new registration is exploratory
   unless separately amended under the existing rules. R4, R7, R8, U3, U4 and the invariant list stand.
 - **0.4 (§4, §4.1, §15) One new package, `harness/experiments/execution_viability/`.** It is the first package under
   `harness/experiments/`; it imports the production modules it reuses and **no production module imports it** (§5's import test
   is the guard), so a defect in it cannot reach the recorder, the executor or the report. It adds no dependency.
-- **0.5 (§5.5) Nine additive `exp_*` tables and one file tree.** Declared where this repo's schema machinery looks (models +
-  `harness/db/schema.py` + a migration), written only through §1.1's experiment writer, never through the production ledger
-  tables. Migration `00NN_phase6d1_exec_viability` (28 characters; `alembic_version.version_num` is `String(32)`, and the 6D
+- **0.5 (§5.5) Eleven additive `exp_*` tables and one file tree.** Declared where this repo's schema machinery looks (models +
+  `harness/db/schema.py` + a migration), written only through §1.1's experiment writer **and only by the least-privileged role
+  `harness_exp`** (§4.7), never through the production ledger tables; the raw observer bodies live in the file tree, not in a
+  table (I5). Migration `00NN_phase6d1_exec_viability` (28 characters; `alembic_version.version_num` is `String(32)`, and the 6D
   addendum's D10 annotation records the 33-character id that aborted every upgrade), with `NN` assigned by the controller at
   merge: `0014` is the newest on `main` and is itself unreleased (live fact (g)).
 - **0.6 (§12) One new CLI group, `harness exp`,** beside `replay` and `policy-compare`, added task by task as each
@@ -99,9 +119,11 @@ historical book reconstruction costs a 0.3 ms snapshot lookup plus **233 ms for 
   the existing `app-research` container** (§4.2), not a compose service and not a cron entry; historical runs are one-shot CLI
   invocations inside `app-research` in a quiet window under §4's cooperative limits. The recorder's cadence, bookmakers string
   and alternates window are untouched (gate 5): the observer adds its **own** bounded reads beside the recorder and shares the
-  recorder's aggregate credit accounting (§1.6c, §7 item 6).
+  one aggregate both processes can see - **the provider's own credit balance**, read from the response headers of every call
+  (§1.6i, §7 item 6, I9).
 - **0.8 (§6.7's amendment protocol, §7.1, §9.7) A veto sampling amendment is defined here and activated only by a dated user
-  decision (§0.14c).** Its recorded fields: amendment id; the profile hash (the frozen reservation table, claim order and release
+  decision (§0.14c).** Its recorded fields: amendment id; the profile hash (the frozen reservation table, claim order and
+  release
   rules); the code sha and `EXECUTOR_VERSION`-equivalent research build; the **activation instant** in UTC and America/Chicago;
   the pre-amendment and post-amendment population labels; the statement that H9's decided population keeps its definition
   ("every decided signal") while its time-to-kickoff mix changes from the amendment instant; and the confirmation that no
@@ -110,7 +132,8 @@ historical book reconstruction costs a 0.3 ms snapshot lookup plus **233 ms for 
   threaded `HoldingPolicy`: a defaulted argument whose default is today's behaviour, so `plan.py`'s live path is **bit-identical
   when nothing is passed** (§5's equality test is the evidence). Arm B sets it; nothing else does; no `Settings` value, no
   `ExecSettings` field and no variant YAML moves, so no order's `config_hash` changes.
-- **0.10 (§7.2, §11) The weekly report and the dashboard gain nothing.** 6D.1's results are a standalone exploratory report under
+- **0.10 (§7.2, §11) The weekly report and the dashboard gain nothing.** 6D.1's results are a standalone exploratory report
+under
   `docs/superpowers/autopilot/reports/`, so `TABLE_KEYS`, `RENDER_ORDER`, `IDENTITY_COLUMNS`, t1-t14, Floor, Gate, Ticket, Pulse
   and Study are untouched and no registered gate statistic can move. Every result table in that report separates registered
   historical performance from exploratory arm results in **separate tables**, never as rows of one table.
@@ -118,10 +141,12 @@ historical book reconstruction costs a 0.3 ms snapshot lookup plus **233 ms for 
   defined in §1.9 before any run, reusing 6D §1.7(b)'s `gap_rule_s = max(600, 3 x cadence_in_force)` rule so the two milestones'
   episodes mean the same thing. Order-weighted results are kept beside it for comparison with existing reports, with
   market-side- and game-weighted sensitivities. **None replaces a frozen gate estimator.**
-- **0.12 (§9.3, §12) A `replay` flag is not isolation.** `harness/replay.py::_execute` builds `Executor(..., replay=True)`, which
+- **0.12 (§9.3, §12) A `replay` flag is not isolation.** `harness/replay.py::_execute` builds `Executor(..., replay=True)`,
+which
   writes orders, intents, signals and fills into the production tables with `replay = true` and steps a **regular 15 s clock
   grid** (`_Grid`) while owning its own transactions per step. 6D.1 therefore neither extends `_execute` nor reuses the replay
-  flag: isolation is structural (§1.1), and the clock comes from the record (§1.3).
+  flag: isolation is a **privilege** boundary (§1.1b, §4.7), and the clock is the **retained action instants** of §1.3d - not a
+  15 s grid, and not the loop clock, which is not retained at all.
 - **0.13 (roadmap decision 6) The sample-accrual forecast is brought forward as a diagnostic only.** 6F still owns the version
   boundary, the revised selection and confirmation dates and the extension rule; the forecast here is for `sharp_two_sided`
   alone, with no pooling, no partial-fill rows counted as orders and no counterfactual fills counted as fills, and it publishes
@@ -140,12 +165,14 @@ historical book reconstruction costs a 0.3 ms snapshot lookup plus **233 ms for 
   stored arrivals, and shipping it dormant**: the claim order and reservations are inert until a single setting is turned on,
   the current oldest-bucket behaviour is the default, and turning it on is the §0.8 amendment's activation instant. Exact
   question: *"Profile P (hash …) reserves X % of each day for signals inside 6 h of kickoff and Y for the weekly slate, releases
-  unused reservations at 21:00 CT, and claims by kickoff proximity within each stratum. Do you activate it, and from what date?"*
+  unused reservations at 21:00 CT, and claims by kickoff proximity within each stratum. Do you activate it, and from what
+  date?"*
 
 ## 1. Components
 
 Each names the draft section, the U10 decision text or the confirmed review finding it implements, its files, what it depends
-on, the tests that prove it and the independently calculated expected result it is judged by. Signatures are copied from the code
+on, the tests that prove it and the independently calculated expected result it is judged by. Signatures are copied from the
+code
 at `main` e3c5463, never recalled. §1.1-§1.5 are T1-T3's spine, §1.6 is T4, §1.7 is T5, §1.8 is T6, §1.9-§1.11 are T4/T7/T8's
 reporting and decision.
 
@@ -153,35 +180,55 @@ reporting and decision.
 (a) **Layout.** `harness/experiments/__init__.py` (empty namespace) and
 `harness/experiments/execution_viability/`: `manifest.py` (§1.2), `source.py` (the production source reader), `storage.py` (the
 experiment writer and the file tree), `capture.py` (§1.3), `adapter.py` (the stateful arm runner, §1.3c), `arms.py` (§1.6),
-`liquidity.py` (§1.5), `bookhealth.py` (§1.7), `observer.py` (§1.6c), `episodes.py` and `report.py` (§1.9), `forecast.py`
-(§1.10), `decision.py` (§1.11). Orchestration, manifests, allocation bookkeeping, storage adapters and experiment reports live
+`liquidity.py` (§1.5), `bookhealth.py` (§1.7), `observer.py` (arm C, §1.6e/i), `episodes.py` and `report.py` (§1.9), `veto_profile.py`
+(§1.8), `forecast.py`
+(§1.10) and `decision.py` (§1.11) - **fourteen modules** (M4). Orchestration, manifests, allocation bookkeeping, storage
+adapters and experiment reports live
 here; **no pricing, planning, queue or matching algorithm is copied into a second implementation**.
-(b) **Source reader - the refusal is the server's, not a flag.** `source.reader(url)` builds its own SQLAlchemy engine with
-`connect_args={"options": "-c default_transaction_read_only=on"}` and asserts `select current_setting('transaction_read_only')`
-= `on` at session open, raising `IsolationError` otherwise. A write attempted through that session is refused by PostgreSQL
-(`cannot execute INSERT in a read-only transaction`), which is the same posture the confirmed review's own production reads
-used. It also sets `statement_timeout = 25s` and `lock_timeout = 1s`, and every read it issues is an indexed bounded extraction
-(§1.3a names the indexes) - never an audit scan, and never during a game window (§4).
+(b) **Both capabilities connect as a least-privileged role, and the refusal is the server's (C2).** A GUC is not a boundary:
+`default_transaction_read_only` is USERSET, so any statement the package later issues could `SET TRANSACTION READ WRITE` and
+write, and an in-process guard under the production role proves nothing after session open. The boundary is therefore a
+**privilege** one. One role, `harness_exp`, holds `SELECT` on the production tables and `INSERT`/`UPDATE` (plus `USAGE` on the
+sequences those tables own) on `exp_*` and nothing else; it is created by the single `CREATE ROLE` + `GRANT`/`REVOKE` step of
+§4.7, which **the user performs** (no CREATEDB, no second database, no second backup target). Both capabilities connect with
+that role through `Settings.exp_database_url()`, which substitutes the role name (the package constant
+`EXP_DB_ROLE = "harness_exp"`) and the password read from **one new settings field**,
+`exp_db_password_file: Path = Path("/run/secrets/exp_db_password")`, into the configured `database_url` (§4.7 has the file's placement
+and the compose bind); the secret is never printed and never
+read by the loop. `source.reader()` and `ExperimentWriter` each raise `IsolationError` **at session open** when
+`select has_table_privilege(current_user, 'orders', 'INSERT')` returns true or when the secret file is absent, so a run under
+the production role or without the grant **fails closed** and T1 does not block on the user's command. `source.reader()`
+additionally sets `default_transaction_read_only = on`, `statement_timeout = 25s` and `lock_timeout = 1s` as defence in depth,
+and every read it issues is an indexed bounded extraction (§1.3a names the indexes) - never an audit scan, and never during a
+game window (§4).
 (c) **Experiment writer - the destination cannot name a production table.** `storage.ExperimentWriter` holds its **own**
-`MetaData` (`EXP_METADATA`) that contains only the nine `exp_*` tables of §2. `insert(table, rows)` raises `IsolationError`
+`MetaData` (`EXP_METADATA`) that contains only the **eleven** `exp_*` tables of §2 (I5). `insert(table, rows)` raises
+`IsolationError`
 unless `table.name.startswith("exp_")` **and** `table is EXP_METADATA.tables[table.name]`; `PRODUCTION_TABLES` (a frozen set
 built from `harness.db.models.Base.metadata.tables` minus the `exp_*` names) is the refusal list §5 asserts against. The module
 never imports `harness.db.models` at module scope; §5's import test fails if it does. Consequence: `orders`, `fills`, `ledger`,
 `positions`, `signals`, `intents`, `order_events`, `strategy_variants`, `gate_reports`, `report_cells`, `coverage_samples`,
-`opportunity_episodes` and `intent_episodes` are unreachable from the writer - a **structural** mechanism, not a flag.
+`opportunity_episodes` and `intent_episodes` are unreachable from the writer - and, under §1.1(b)'s role, unreachable from the
+*connection* as well, which is the structural mechanism; the in-process allow-list and §5's import test are defence in depth,
+not the boundary. **No member of the refusal list is ever lifted**: in particular the observer does not write `source_state`
+and `harness_exp` holds no privilege on it (I9), because the shared quota aggregate is the provider balance (§1.6i), not a row
+in our database.
 (d) **Prospective observer - no venue gateway, no production signal input.** `observer.py` imports
 `harness.feeds.odds_api.OddsApiClient` and `harness.feeds.http.HttpClient` only; §5 asserts that no module in the package
 imports `harness.venues.kalshi.transport`, `harness.execution.gateway` or any name matching `*gateway*`, mirroring
 `tests/test_gateway.py::test_paper_gateway_never_touches_transport` and
-`tests/test_rfq_refusal.py::test_no_module_in_the_repository_names_the_quote_path`. Its rows land in `exp_observation` and
-`exp_raw_body`; nothing it fetches reaches `odds_snapshots`, `fair_values`, `market_gap_snapshots` or `signals`, so no
+`tests/test_rfq_refusal.py::test_no_module_in_the_repository_names_the_quote_path`. Its rows land in `exp_observation`, whose
+`body_path` and `body_sha256` point at the raw
+response in the hashed file tree (I5: no raw-body table exists); nothing it fetches reaches `odds_snapshots`,
+`fair_values`, `market_gap_snapshots` or `signals`, so no
 production fair or signal query can see a newer observation because of it.
-(e) **Source == destination.** With §2's chosen storage the source and destination are the same PostgreSQL database, so identity
-equality is **permitted and recorded in the manifest**, and the refusal is moved to where it can be enforced: the source
-capability cannot write (b) and the destination capability cannot name a production table (c). `storage.check_destination(url)`
-additionally refuses a destination whose resolved `dbname` is not the configured `database_url`'s, so an operator cannot point
-the writer at a second deployment by accident, and `IsolationError` is raised before any work when either check fails:
-**fail closed**.
+(e) **Source == destination, with the destination refused by privilege.** With §2's chosen storage the source and destination
+are the same PostgreSQL database, so identity equality is **permitted and recorded in the manifest**; what the draft requires -
+"reject a production destination, and fail closed if isolation cannot be established" - is delivered by the role: under
+`harness_exp` the production tables are not a possible destination at all, whatever statement any of the fourteen modules
+issues. `storage.check_destination(url)` additionally refuses a destination whose resolved `dbname` is not the configured
+`database_url`'s, so an operator cannot point the writer at a second deployment by accident. `IsolationError` is raised before
+any work when the privilege probe, the secret or the dbname check fails: **fail closed**.
 (f) **Legacy instrument kept distinct.** `harness/cli.py`'s `policy-compare` help gains one sentence naming it the *admission*
 diagnostic and pointing at `harness exp run` for stateful fills; `policy.render()`'s caption gains the same pointer. No
 behaviour, default or column of `compare` changes.
@@ -201,17 +248,21 @@ with `hashlib.sha256`; the hash is `exp_run.manifest_hash` and every result row 
 executed variant, keyed by the registered id it was copied from, never written back), `arms` (one `ArmSpec` each) and
 `arm_hashes`; **capture** - `capture_hashes` (one sha256 per captured stream file), `run_id_bounds`, `order_id_bounds`,
 `fill_id_bounds`, `placement_start`, `placement_end`, `warmup_start`, `observation_end`, `extracted_at` and `exclusions`;
-**economics** - `portfolio_identity = ("run", "arm", "variant")`, `shared_slot_limit` (150, `exec_max_open_orders`), `clock_mode`
-(`recorded` | `ideal_grid_15s` - the second is a labelled sensitivity, never a silent substitute), `cohort` (market/game ids),
+**economics** - `portfolio_identity = ("run", "arm", "variant")`, `shared_slot_limit` (150, `exec_max_open_orders`),
+`clock_mode`
+(`retained_action_instants` | `ideal_grid_15s` - the second is a labelled sensitivity, never a silent substitute; §1.3d defines
+the first), `cohort` (market/game ids),
 `selection_seed`, `opportunity_definition` (§1.9's episode rule and `gap_rule_s`); **measurement** - `scheduled_observations`,
 `available_observations`, `timestamp_semantics` (§1.3b's event-time/availability-time map), `credit_budget` and
-`request_budget` (§1.6c), `resource_limits` (§4), `markout_horizons`, `missingness_policy` and `review_deadline`.
+`request_budget` (§1.6i), `resource_limits` (§4), `markout_horizons`, `missingness_policy` and `review_deadline`.
 `Manifest.freeze()` refuses to produce a hash while any field is `None`; `resume(run_id, manifest)` refuses when the stored hash
-differs, raising `ManifestMismatch` and leaving the checkpoint untouched. A manifest is **never** rewritten: a changed field is a
+differs, raising `ManifestMismatch` and leaving the checkpoint untouched. A manifest is **never** rewritten: a changed field
+is a
 new `run_id` that names its predecessor in `supersedes`.
 *Files:* `manifest.py`, `storage.py`, `tests/test_exp_manifest.py`. *Depends on:* 1.1.
 *Expected result:* freezing the same inputs twice yields the identical 64-character hash; changing one byte of one
-`variant_configs` entry changes it; `resume` with the changed manifest raises and the checkpoint row is byte-identical afterwards.
+`variant_configs` entry changes it; `resume` with the changed manifest raises and the checkpoint row is byte-identical
+afterwards.
 
 ### 1.3 Timestamped capture and baseline reconstruction (draft §2; confirmed review §§1-3; outline T2)
 (a) **Capture.** `capture.py` extracts, through §1.1(b)'s reader, the smallest representative post-repair slice and writes it to
@@ -223,7 +274,11 @@ manifest together with the exact SQL and its bound parameters. Reads are indexed
 `ix_metric_samples_name_ts (name, ts desc)` for `exec.loop_ms`. The first proof slice is one representative repaired day; the
 full set then adds an off-window span, an overnight boundary, a busy window, a gap/recovery and a capacity-bound interval, with
 coverage inspected before the range is chosen and no silent crossing of a simulator or executed-population boundary
-(`EXECUTOR_VERSION`, `nw_executor_version`, `config_hash`).
+(`EXECUTOR_VERSION`, `nw_executor_version`, `config_hash`). The `games` stream is captured **as schedule history**, not as the
+schedule as it stands today: the kickoff list handed to `interval_for` (§1.6b) is reconstructed as of the evaluation instant
+from the retained row versions where the capture keeps them, and from the earliest retained value otherwise, because a kickoff
+revised after the fact is exactly the lookahead (b) forbids. A slice whose kickoffs cannot be reconstructed as-of is labelled in
+`exp_limitation` (`kind = 'kickoff_not_asof'`) and excluded from B's regime-sensitive rows (I3).
 (b) **Event time versus availability time.** Every captured row carries both its venue/source timestamp and its local
 receipt/insertion stamp (`orderbook_events.event_id` is the only monotone quantity on the tape and stays the cursor;
 `fair_values.created_at` is the instant the recorder priced, never the snapshot's, per `store.py`'s own note). A decision at
@@ -235,8 +290,9 @@ assumption and the affected slice are labelled in `exp_limitation`; no such slic
 session per step and takes the replay advisory lock; 6B's D15 already suspends its parity verdict because a 15 s grid against a
 live loop that ran 27 loops in an hour is a different number of observation opportunities. *Approach 2, extend
 `policy.compare`*: rejected - §0.2's three stated limitations are exactly the state this milestone exists to carry. *Approach 3
-(chosen), a stateful adapter around the shared decision and fill functions*: `adapter.ArmRunner` steps the **recorded** loop
-instants (the `exec.loop_ms` samples, resolved per §1.3d) and at each instant calls, in this order, `store.market_rows(session,
+(chosen), a stateful adapter around the shared decision and fill functions*: `adapter.ArmRunner` steps the **retained decision
+instants** resolved by §1.3d (the union of the retained action stamps and the `exec.loop_ms` samples) and at each instant
+calls, in this order, `store.market_rows(session,
 ids, at=instant)` and `store.load_intents(session, variant_ids, lower, replay=False, at=instant)` through the read-only reader;
 `plan.plan_actions(intents, open_orders, markets, state_by_variant, variant_cfg, kill_active, now, s, lagging, policy)` with
 **its own** `open_orders` and `state_by_variant` (§1.4) instead of the empty ones `compare` passes; `book.BookWalker(session,
@@ -245,32 +301,62 @@ that keeps a per-ticker anchor so a slice is one walk, not one reconstruction pe
 4,231-row replay is what makes the walker mandatory); and `fills.simulate_fills(order, state, book, prints, deltas, deadline,
 fill_method, fee_model, cancel_policy)` per arm-owned order, with `deadline` the arm's own cancel/expiry instant, exactly as the
 live loop's two tracks differ. `plan.rebuild_state(open_orders, positions, fills_today, variant_id)` rebuilds exposure from the
-**arm's own** world each instant, as the live executor does. Nothing in the adapter re-implements a rule: the arms differ only in
-the `policy` argument (§1.6) and in which observations they may read (§1.6c).
-(d) **What `exec.loop_ms.ts` means, resolved before replay.** The sample is written in `_write_metric_batch` at the end of a
-step, so its `ts` is the step's **completion** stamp and the decision instant is `ts - value_ms`; with p50 16,759 ms and p95
-24,165 ms (live fact (f)) that difference is not negligible. `capture.resolve_instants()` therefore emits both, records which
-convention the run used in the manifest, and the run publishes a sensitivity under the other convention. An ideal 15 s grid is
-available as `clock_mode = ideal_grid_15s` and is always a labelled sensitivity beside the recorded-clock result.
+**arm's own** world each instant, as the live executor does. Nothing in the adapter re-implements a rule: the arms differ
+only in
+the `policy` argument (§1.6) and in which observations they may read (§1.6e).
+(d) **The replay clock is the retained action instants, not a recorded loop clock (C1).** Revision 1's premise was wrong and is
+withdrawn: **per-loop instants are retained nowhere.** `exec_heartbeat` is a single row overwritten every step, and
+`exec.loop_ms` is written by `_write_metric_batch` only when `telemetry.Sampler(Settings.metric_sample_s)` is due
+(`harness/execution/loop.py:473`) with `metric_sample_s = 60` (`harness/config/settings.py:126`), so live fact (f)'s 1,158 rows
+are 1,158 **samples** over 24 h - one per 74.6 s - while the executor stepped roughly 3,500-5,000 times. Stepping only those
+samples would replay about a quarter of the day's decisions and delay every arm's reaction by up to a minute, which is the
+sampling artefact 6B's D15 already suspends a parity verdict for.
+What *is* retained is every instant at which the executor **acted**. `capture.resolve_instants()` is therefore defined as the
+ordered, deduplicated union of the retained decision-bearing stamps inside the slice - `orders.placed_at`, `order_events.ts`,
+`intents.created_at`, `fills.filled_at` - **plus** the `exec.loop_ms` samples; that union is the replay clock and the manifest's
+`clock_mode = retained_action_instants` (the value revision 1 called `recorded`). The spacing between those instants is not the
+live loop's spacing, and the design says so rather than implying otherwise: `capture` writes one `exp_limitation` row per run
+(`kind = 'loop_spacing_unreconstructable'`, scope = the whole slice) recording that idle loops which produced no row cannot be
+reconstructed, and every report and every `exp baseline-check` run prints the **resolved instant count beside the live loop
+estimate** (samples x 74.6 s of wall clock divided by the p50 loop time) so no reader can mistake the one for the other. No
+parity claim is made over the thinned opportunity clock; parity is claimed only at the retained action instants (f). An ideal
+15 s grid remains available as `clock_mode = ideal_grid_15s` and is always a labelled sensitivity beside the retained-instant
+result.
+The sample's `ts` is `_locked_step`'s `now` - **the decision instant itself** (I1), not a completion stamp: `_locked_step` takes
+`now = self._clock()` before calling `self._body(...)`, and `_write_metric_batch` writes
+`telemetry.record_many(session, "exec", samples, ts=now)` (`harness/execution/loop.py:717`), so `ts` is the instant that step's
+decisions were taken and `value_ms` is how long the step then took. The `ts - value_ms` reading survives only as a **labelled
+falsifier sensitivity**: the run republishes the arm comparison under it to show the verdict does not turn on the convention,
+and never uses it as the primary clock. A slower production loop caused by historical churn remains part of recorded-clock
+replay; a prospective equal-resource run can test the benefit of reduced workload separately (I13a; "recorded-clock replay" is
+this section's retained-instant replay of the production tape).
 (e) **Lifecycle bounds.** `warmup_start` precedes the earliest contributing placement (or outstanding orders are reconstructed
 at `placement_start`); new placements are evaluated only inside `[placement_start, placement_end]`; every admitted order is then
 followed through expiry and its due 30-minute and closing outcomes to `observation_end`. Orders still live at
 `observation_end`, and missing outcomes, are marked censored in `exp_outcome` rather than dropped. A three-day input slice
 against a 27.90 h median fill wait is **not** a complete cohort and the capture refuses to call it one.
-(f) **Baseline acceptance.** `exp baseline-check` compares arm A's actions, prices, watched fills, cancellation and expiry
-instants and shared-capacity exclusions against the matching source slice wherever its input history is reconstructible, and
-writes every mismatch with its cause to `exp_mismatch`. Missing history is an explicit limitation, never a passing parity
-result; the pass condition is *zero unexplained mismatches*, not *zero mismatches*.
+(f) **Baseline acceptance, at the retained action instants (C1).** `exp baseline-check` compares arm A's actions, prices,
+watched fills, cancellation and expiry instants and shared-capacity exclusions against the matching source slice **at the
+instants at which the recorded actions occurred** - the stamps of (d)'s union - wherever the input history is reconstructible,
+and writes every mismatch with its cause to `exp_mismatch`. It is not a claim that A reproduces every loop the executor ran:
+the loops that acted are retained and compared, the idle loops between them are not reconstructable and are the named
+limitation of (d). Missing history is an explicit limitation, never a passing parity result; the pass condition is *zero
+unexplained mismatches at the retained action instants*, not *zero mismatches*.
 *Files:* `capture.py`, `adapter.py`, `tests/test_exp_capture.py`, `tests/test_exp_adapter.py`, `tests/test_exp_baseline.py`.
 *Depends on:* 1.1, 1.2.
 *Expected result, computed independently:* on the fixture slice of `tests/fixtures/`, arm A reproduces the recorded action list
-for the captured orders exactly, including the `fair_stale` cancel at the recorded instant; a hand-traced cancel/replace chain,
+for the captured orders exactly **at the retained action instants**, including the `fair_stale` cancel at the recorded instant,
+and `resolve_instants()` on that slice returns the union of the four action stamps and the metric samples (the test asserts the
+count and the first and last values, and that the run's `exp_limitation` carries the spacing row); a hand-traced
+cancel/replace chain,
 one partial fill, one overnight transition, one delayed loop and one gap/recovery each match a queue and order transition table
 written in the test from the fixture's own stamps, not from the implementation.
 
 ### 1.4 Independent per-arm state, checkpoint and resume (draft §3; outline T3)
 Each `(run, arm)` owns its orders, queue tenure, positions, capacity counter, print consumption and tape cursor in
-`exp_order`, `exp_order_event`, `exp_fill` and `exp_checkpoint`; **two arms share no mutable object** (§5 proves it by running
+`exp_order` (whose `placed_at`, `expiry`, `cancelled_at` and `cancel_reason` columns carry every lifecycle transition - there is
+no separate `exp_order_event` table; §2's eleven are the whole set), `exp_fill`, `exp_allocation` and `exp_checkpoint`; **two
+arms share no mutable object** (§5 proves it by running
 two arms in one process and asserting neither's `exp_order` set, capacity counter or cursor moved when the other placed). One
 active order per `(variant, market, side)`, as the baseline keeps; partial fills, queue-ahead, expiry, repricing, dirty
 intervals and exposure carry forward; a key is **not** permanently blocked after its first placement and capacity is **not**
@@ -300,7 +386,11 @@ quantity (the allocation is keyed by `trade_id`, which is idempotent across resu
 order inside one instant is deterministic: by the order's placement instant, then `exp_order.id`. Alternative arms and
 separately labelled variant portfolios may reuse the same tape; their contracts and returns are **never summed** as one
 executable portfolio, and `report.py` refuses to emit a row summing two portfolio identities. A combined-variant portfolio would
-need its own common liquidity allocator and is out of scope (§6). Independent legacy `no_watcher` histories are carried only as
+need its own common liquidity allocator and is out of scope (§6). Resting venue depth and trade/delta reconciliation are
+handled consistently with the shared simulator (I13b): `SimState`'s
+`prints` and `buckets` ledger and `RECON_HORIZON` are **not** re-implemented above the simulator - `PortfolioLedger` only caps
+what the simulator has already decided a track may take, so depth, queue position and the trade/delta reconciliation window
+remain exactly the shared code's. Independent legacy `no_watcher` histories are carried only as
 labelled diagnostics, never as additive outcomes.
 *Files:* `liquidity.py`, `adapter.py`, `tests/test_exp_liquidity.py`, `tests/fixtures/exp_print_10_contracts.json`.
 *Depends on:* 1.4.
@@ -321,12 +411,26 @@ Three arms; no search of the six-policy grid, and quote aggression and capacity 
 
 (a) **Where B acts, exactly.** `plan._fair_stale(market, cfg, now, policy)` today computes
 `allowance = max(int(cfg["stale_s"]), int(market.stale_allowance_s or 0))` and widens it only when
-`policy.stale_allowance_s is not None`. B adds a second, **finite and cadence-derived** override on the same line: a new
+`policy.stale_allowance_s is not None`. B **replaces** that allowance with a **finite, cadence-derived** one (I2): a new
 experiment-only field `cadence_allowance: CadenceAllowance | None = None` on the existing `HoldingPolicy`, defaulting to `None`
 so the live path is unchanged and `BASELINE` is untouched. `market.stale_allowance_s` itself is **not** recomputed: it is the
 pricing-time value `harness/pricing/fair.py::stale_allowance_s` produced (`FEATURED_CADENCE_S = 120` plus
 `Settings.tick_budget_s = 100`, a fixed 120 s independent of the interval actually in force), and the whole point of B is that
-the executor's *own* freshness test may use the interval that was actually scheduled.
+the executor's *own* freshness test may use the interval that was actually scheduled. The branch, written out (I2): inside
+`_fair_stale`, after today's `allowance = max(int(cfg["stale_s"]), int(market.stale_allowance_s or 0))` and before the existing
+`policy.stale_allowance_s` widening,
+
+```python
+if policy.cadence_allowance is not None:                      # experiment-only; BASELINE passes None
+    allowance = max(int(cfg["stale_s"]), int(policy.cadence_allowance(market)))
+```
+
+where `policy.cadence_allowance(market)` returns `interval + s.tick_budget_s` - `interval` being (b)'s scheduled interval at the
+market's `fair_ts` and `s.tick_budget_s` the recorder's `Settings.tick_budget_s = 100` (M2: `_fair_stale` receives `cfg` and
+`policy` but no settings object, so the experiment resolves that term in `adapter.py` before the call; the value is the ruling's
+`max(int(cfg["stale_s"]), interval + s.tick_budget_s)`). The cadence allowance **replaces** `market.stale_allowance_s` rather
+than taking a maximum with it, so B is *tighter* than A wherever the scheduled interval is short. The regime table in (b) is the
+authority on every value.
 (b) **The interval.** `scheduled_interval(fair_ts)` is `harness/recorder/cadence.py::interval_for(sport, fair_ts, kickoffs, tz)`
 - the recorder's **actual sport-wide schedule**, not each order's own time to kickoff - evaluated at the fair row's **creation**
 instant, so entering a game window cannot retroactively shorten an already-priced row's allowance, and `tick_budget_s` is added
@@ -338,7 +442,13 @@ as §0.1 of the phase 3 addendum defines the quantity. Regime table, with `cfg["
 | sport-wide game window / in progress | 120 s | **220 s** | 220 s |
 | weekend, outside a window | 300 s | **400 s** | 220 s |
 | weekday, outside a window | 900 s | **1,000 s** | 220 s |
-| quiet hours 01:00-08:00 CT, no game in progress | `None` | **the last finite allowance before the suspension** | 220 s |
+| quiet hours 01:00-08:00 CT, no game in progress | `None` | **the last finite value, per (d)'s closed form** (else 1,000 s, labelled) | 220 s |
+
+B is therefore **tighter than A in the burst regime** (180 s against 220 s), **identical to A in the sport-wide game window**
+(220 s both) and wider only outside a window (400 s at the weekend, 1,000 s on a weekday): its measurable effect is the
+off-window regimes, which is where live fact (g)'s fill starvation sits (M3). The kickoff list `interval_for` receives is the
+as-of reconstruction of §1.3(a), never today's schedule, and a slice whose kickoffs cannot be reconstructed as-of is excluded
+from these regime-sensitive rows and labelled in `exp_limitation` (I3).
 
 (c) **What B is not.** B overrides the executor's calculated-fair age allowance and nothing else. It does not widen the
 strategy's own source-quote-age filter (`harness/strategy/run.py:270`'s `not_stale`, which compares
@@ -347,18 +457,28 @@ strategy's own source-quote-age filter (`harness/strategy/run.py:270`'s `not_sta
 (`exec_cancel_venue_move_pts`). `HoldingPolicy.rest_to_expiry` is **not** B: it bypasses those checks, and §5 asserts the two
 produce different action lists on the same fixture. `ArmSpec` records every one of these distinctions and the manifest hashes
 them.
-(d) **Overnight and missed fetches.** When polling is suspended (`interval_for` returns `None`) B retains the last finite
-allowance for that observation and the age keeps increasing until the stale rule cancels; no scheduled fetch is never read as
-infinite validity. A fetch that did not happen does not extend its own deadline: the allowance is a function of the **scheduled**
+(d) **Overnight and missed fetches, in closed form (I4).** When polling is suspended (`interval_for` returns `None`) B's
+allowance for that observation is **`interval_for` evaluated at the latest instant at or before `fair_ts` at which it returns a
+finite value, walking back in `exec_period_s` steps within the capture window; if none exists the row takes the weekday
+off-window value 1,000 s and is labelled `overnight_unanchored`** - a definition a test can evaluate and a reader can check,
+which "the last finite allowance" was not. The age keeps increasing until the stale rule cancels; no scheduled fetch is never
+read as infinite validity, and `exp_result` counts the `overnight_unanchored` rows so the reader sees how much of B's overnight
+behaviour rests on the fallback. A fetch that did not happen does not extend its own deadline: the allowance is a function of
+the **scheduled**
 interval at `fair_ts`, never of the elapsed gap to the next actual row.
 (e) **Arm C needs new observations.** Historical tape cannot establish what an unrecorded faster fetch would have said, so C has
-**no historical arm** and is only ever run prospectively. On the prospective common capture, A and B receive only ordinary-cadence
+**no historical arm** and is only ever run prospectively. On the prospective common capture, A and B receive only
+ordinary-cadence
 information and C receives the extra observations; all arms use the same cohort, the same venue tape, the same resource
 accounting and the same predetermined clock policy, and outcome measurement uses §1.9's common observer on a fixed benchmark
 schedule, never each arm's own observation frequency. `observer.py` calls `OddsApiClient.fetch_featured(sport)` **unchanged** -
 the same URL, the same `FEATURED_MARKETS = "h2h,spreads,totals"`, the same bookmakers string, so gate 5 is untouched - every
-`EXP_OBSERVE_INTERVAL_S = 120` seconds during the frozen window, prices the cohort's markets through the same
-`harness/pricing/` functions, and writes `exp_observation` plus the raw body. Two consequences the cohort size does not change:
+`EXP_OBSERVE_INTERVAL_S = 120` seconds during the frozen window, prices the cohort's markets through the same **pure**
+computations in
+`harness/pricing/` - `fair.py`'s consensus and direct-fair arithmetic and its `stale_allowance_s` derivation, called as
+functions on the fetched quotes (I12). **No `compute_*_fair_values` entry point is called and nothing writes `fair_values`**:
+the observer's prices exist only in `exp_observation`, whose `body_path` and `body_sha256` name the raw response in the hashed
+file tree (§2). Two consequences the cohort size does not change:
 the featured endpoint returns **every** event of the sport, so the credit cost is per sport per interval (two calls per 120 s)
 regardless of how many games are in the cohort, and the extra rows must therefore be masked by storage, which §1.1(d) does.
 (f) **Cohort.** At most eight eligible games, up to four NFL and four NCAAF, kickoff **24-120 h from cohort freeze** (live fact
@@ -380,12 +500,20 @@ unavailable with its reason**; no tier is bought and no cap is raised.
 (i) **The observer's numeric cap, enforced in code.** Two `fetch_featured` calls per 120 s cost 2 x 3 = **6 credits per
 interval** (cost is unique markets returned x regions, one region), 4,320 credits a day, ~21,600 over a five-day window - about
 0.43 % of `Settings.odds_monthly_credits = 5,000,000`. The cap is `EXP_OBSERVER_CREDIT_CAP = 60,000` credits **per run**
-(~1.2 % of the band), checked before every call against the credits this run has consumed and against the recorder's own
-aggregate month accounting (`source_state`'s `x-requests-last` sum, the same rows `tick.py` maintains, and the
-`credits_watch_fraction = 0.40` guard the props feed already respects). Over the cap the observer goes **dormant** for the run,
-writes `exp_observation` rows labelled `exp_skipped_budget` for every scheduled-but-unmade read, and never retries; a second
-process with an independent allowance is refused by construction because the check reads the shared accounting, not a private
-counter.
+(~1.2 % of the band). Two checks run before every call (I9): (1) **the recorder's own guard**, evaluated on the same expression
+`harness/recorder/tick.py:1411` uses - `remaining is None or remaining < Settings.credits_watch_fraction *
+Settings.odds_monthly_credits` (0.40 x 5,000,000) - against the freshest balance the observer knows; and (2) the run cap,
+against the credits this run has consumed. Either one refuses the call.
+The shared aggregate is **the provider's balance, not a row in our database.** Every observer call parses the provider's
+`x-requests-last` / `x-requests-used` / `x-requests-remaining` response headers with the existing
+`harness.feeds.odds_api.parse_credit_headers(headers) -> Credits(last, used, remaining)` and stores `credits_last` and
+`credits_remaining` on the `exp_observation` row it just wrote. That balance is decremented by the recorder's calls too, so both
+processes read one authoritative counter on every call and a second process cannot hold an independent allowance. The observer
+therefore **does not write `source_state`**: no member of §1.1(c)'s refusal list is lifted, `harness_exp` holds no privilege on
+`source_state`, and C2's boundary is not widened for a counter. The cost is that `recorder.credits_remaining` lags the
+observer's spend by at most one observer call (3 credits), which §3 row 5 reads directly. Over the cap the observer goes
+**dormant** for the run, writes `exp_observation` rows labelled `exp_skipped_budget` for every scheduled-but-unmade read
+(`credits_remaining` null on those rows), and never retries.
 *Files:* `arms.py`, `observer.py`, `harness/execution/policy.py` (one defaulted field), `harness/execution/plan.py` (one
 `if policy.cadence_allowance` branch inside `_fair_stale`), `harness/experiments/execution_viability/adapter.py`,
 `tests/test_exp_arms.py`, `tests/test_exp_observer.py`, `tests/test_exec_plan.py` (the unchanged-default assertion).
@@ -400,11 +528,13 @@ and the apparent gain does not appear; `plan_actions(...)` with no `policy` argu
 (a) **The quantities, recorded separately** in `exp_book_health`: source quote timestamp, successful fetch/transport timestamp,
 fair-computation timestamp (`fair_values.created_at`), per-ticker last event (`orderbook_events` max `event_id` and its `ts`),
 subscription continuity (`ws_connect` boundaries via `book.newest_ws_connect`), session/reconnect boundaries
-(`BookState.source`, `anchor_id`, `sid`, `seq`), observation gaps (`market_dirty_intervals` with cause) and revalidation results.
+(`BookState.source`, `anchor_id`, `sid`, `seq`), observation gaps (`market_dirty_intervals` with cause) and revalidation
+results.
 (b) **The question.** `plan.MarketNow.dirty` marks a market dirty three ways - `BookState.dirty` (a lost frame or gap), the
 loop's dead-recorder verdict, or this ticker's own newest row older than `exec_book_max_age_s = 120` - and the third is what
 231 of the 238 filled counterfactual orders met. `bookhealth.classify()` separates **confirmed inactivity** (subscription
-intact across the interval, no `gap` row, no sequence discontinuity, the next event's `seq` continuing the previous), **confirmed
+intact across the interval, no `gap` row, no sequence discontinuity, the next event's `seq` continuing the previous),
+**confirmed
 data loss** (a real missing frame: `first_gap_ts` non-null, or a sequence skip the continuity rule does not allow) and
 **unresolved** (the tape cannot distinguish them). Unknown continuity stays unknown.
 (c) **Bounded verification only.** Where a bounded read-only book check is warranted, it is a **snapshot comparison at a
@@ -413,11 +543,13 @@ lookup plus ~233 ms per 4,231-row delta replay, so `bookhealth` samples at most 
 50 s of replay) and records the sample frame rather than scanning every interval. A snapshot cannot prove that no intervening
 change occurred and cannot preserve queue priority across a gap; both statements are printed with every result.
 (d) **No eligibility change.** A/B/C keep production book-dirty semantics exactly. Hypothetical continuity-aware
-classifications are published beside them and change no gate eligibility, no `dirty_minutes` measure and no stored row. A changed
+classifications are published beside them and change no gate eligibility, no `dirty_minutes` measure and no stored row. A
+changed
 health policy would be a **separately named later arm** with its assumptions frozen before use; it is not bundled into B or C,
 and a winning assumption never retroactively cleans historical rows.
 *Files:* `bookhealth.py`, `tests/test_exp_bookhealth.py`. *Depends on:* 1.1; may use 1.3's capture.
-*Expected result, computed independently:* four fixtures - a quiet ticker with an intact subscription (**confirmed inactivity**),
+*Expected result, computed independently:* four fixtures - a quiet ticker with an intact subscription (**confirmed
+inactivity**),
 an actual missing frame (**confirmed data loss**), a healthy global heartbeat with a lost per-ticker subscription (**confirmed
 data loss**, because global health is not per-ticker evidence) and a re-anchor with intervening trades (**unresolved**, with the
 queue consequence stated) - classify as named, and the aggregate over the captured slice reports the three counts and never a
@@ -428,7 +560,8 @@ Independently releasable: it waits on no arm result, no capture and no order-chu
 never touches an experiment placement decision. Caps unchanged, enforced by the existing atomic path
 (`harness/research/spend.py::reserve_spend(session, now, settings, kind, models, searches)`, which takes the ISO-week advisory
 lock, refuses with `BudgetRefused` before writing anything, and whose projection is `worst_case_usd(model, searches)`).
-(a) **Keep every candidate and its disposition.** `veto_queue` rows and `veto_decisions` labels are retained as they are; nothing
+(a) **Keep every candidate and its disposition.** `veto_queue` rows and `veto_decisions` labels are retained as they are;
+nothing
 is deleted or relabelled, and every skipped, cached and evaluated row keeps its label and both its source and decision
 timestamps.
 (b) **The pacing profile, frozen before sampling changes.** `veto_profile.py` holds `PacingProfile`: per-day reservations by
@@ -446,15 +579,17 @@ window against the profile and worst-case call costs, and reports which opportun
 **never** invents a model answer for a question that was not asked: historical answers are not reused as if the new profile had
 asked different historical questions, and coverage is reported as *opportunities*, not as outcomes.
 (e) **Cache validity and invalidation.** The trigger/cache mechanism (`harness/research/veto.py`'s trigger features and
-`harness/research/features.py::invalidated`, whose three invalidators are `espn_status`, `weather_fetched_at` and a `fair_move`
-of at least `FAIR_MOVE_INVALIDATOR`) gains an explicit validity **window** per key and an explicit statement that a same-key
+`harness/research/features.py::invalidated`, whose three returned labels are `"espn_status"`, `"weather"` - the label for a
+changed `weather_fetched_at` input key (M1) - and `"fair_move"`, the last at or above `FAIR_MOVE_INVALIDATOR`) gains an
+explicit validity **window** per key and an explicit statement that a same-key
 resting order is evidence of repeated context, not an unconditional reason to suppress new news: new material information
 bypasses the cached context and forces a call within the reservation.
 (f) **Population reporting.** Coverage and model outcomes are reported by sport and kickoff window, with sample eligibility and
 selection probabilities wherever random sampling is used. Pre/post veto value is never compared without the changed population
 and the amendment boundary printed beside it.
 *Files:* `harness/research/veto.py` (claim order behind the setting), `harness/research/spend.py` (reservation check only, caps
-untouched), `harness/experiments/execution_viability/veto_profile.py`, `harness/config/settings.py` (one optional field),
+untouched), `harness/experiments/execution_viability/veto_profile.py` (`Settings.veto_pacing_profile` is declared by T1 with
+the milestone's other fields, §9),
 `tests/test_veto_pacing.py`, `tests/test_research_spend.py`. *Depends on:* 1.1; independent of 1.3-1.7.
 *Expected result, computed independently:* over the last seven days' stored arrivals (3,149 decided of 178,618, none inside
 5.7 h of kickoff, 14,882 budget-skipped rows inside 6 h), a profile reserving 50 % of each day for signals inside 6 h of kickoff
@@ -475,7 +610,8 @@ after `gap_rule_s` a new one. The rule, its parameters and the re-entry statemen
 outcome is read.
 (c) **Weightings and concentration.** Order-weighted results are primary for comparability with existing reports; market-side-
 and game-weighted sensitivities sit beside them (the review's own demonstration: order-weighted -0.755 / -1.215 against
-market-side-weighted +0.597 / +0.365 on the same rows); game-clustered uncertainty uses `harness/report/stats.py::cluster_ci(values,
+market-side-weighted +0.597 / +0.365 on the same rows); game-clustered uncertainty uses
+`harness/report/stats.py::cluster_ci(values,
 clusters, level=0.90)` unchanged, with its one-cluster `nan` convention intact. Concentration is always reported: maximum
 contribution by game (game 469 supplied 96 of 191 gate observations) and repeated liquidity attribution (§1.5's allocation
 ledger, printed as allocated vs. requested contracts). None of these replaces a frozen gate estimator, and §0.10 keeps them out
@@ -516,21 +652,31 @@ range and the sentence "accrual unidentified: fewer than 10 distinct filled game
 ### 1.11 The decision report (draft §7; U10 "conclude retain/revise/stop/insufficient"; outline T8)
 `decision.py` renders the milestone's completion evidence and its dated recommendation - **retain / revise / stop / insufficient
 evidence** - into `docs/superpowers/autopilot/reports/2026-09-<dd>-phase6d1-decision.md`. Completion evidence, verbatim from the
-draft: proven stateful baseline behaviour and isolation with mismatches explicitly resolved or bounded; comparative paper results
+draft: proven stateful baseline behaviour and isolation with mismatches explicitly resolved or bounded; comparative paper
+results
 for feasible arms, or an explicit reason an arm could not be measured, with **zero invented faster-history observations**; a
-cause-specific book-health diagnosis and a fresh-outcome coverage report; veto pacing implemented and verified within unchanged
-caps with a recorded population boundary; and the forecast plus the dated recommendation. **Positive returns or a passing
+cause-specific book-health diagnosis and a fresh-outcome coverage report; veto pacing **implemented, preflighted against
+stored arrivals under unchanged
+caps, shipped dormant, with the §0.8 amendment record and boundary fields prepared; the boundary instant is written at the
+user's activation** (I11, D16); and the forecast plus the dated recommendation. **Positive returns or a passing
 go-live gate are not completion requirements**: an infeasible or economically unproductive maker configuration closes this
-milestone with a supported negative finding. Any production adoption proposal carries exact settings, hash, effective date,
+milestone with a supported negative finding. The dormant state **closes the milestone's veto component**: U10 asked for the
+pacing to be
+implemented and verified within the unchanged caps, and the preflight against stored arrivals plus the prepared amendment
+record is that verification; activation changes H9's decided population and is the user's (§0.14c), so 6D.1 neither waits on it
+nor is incomplete without it. Any production adoption proposal carries exact settings, hash, effective date,
 rollback and affected measurement populations, and remains §0.14a's decision. 6D.1 is marked done only when this evidence
 exists - never when its CLI and tests are finished.
-*Files:* `decision.py`, `docs/superpowers/autopilot/reports/` (the report), `tests/test_exp_decision.py`. *Depends on:* 1.9, 1.10.
+*Files:* `decision.py`, `docs/superpowers/autopilot/reports/` (the report), `tests/test_exp_decision.py`. *Depends on:* 1.9,
+1.10.
 *Expected result:* with any required evidence section empty, `decision.render()` raises rather than emitting a recommendation.
 
 ## 2. Data
 
 **The isolation choice, weighed.** (a) *Additive `exp_*` tables in the `harness` database, written only through §1.1(c)'s
-writer* - **chosen**. (b) *A separate database on the same PostgreSQL server*: cleanest nominal boundary, but the `harness` role
+writer **and only by §1.1(b)'s least-privileged role*** - **chosen** (C2: the role, not the writer, is the boundary; the role
+holds `SELECT` on production tables and `INSERT`/`UPDATE` on `exp_*` alone, so a stray write is refused by the server). (b)
+*A separate database on the same PostgreSQL server*: cleanest nominal boundary, but the `harness` role
 is assumed to lack `CREATEDB`, so it is an ops action the user performs (and U10's bounded implementation must not block on
 one); `deploy/backup/dump.sh` dumps the **named** database, so a second database would be outside every backup and every restore
 rehearsal; and `verify.md`'s invariant queries all run against `harness`, so the isolation read-backs of §3 would need a second
@@ -538,8 +684,10 @@ connection. (c) *File-backed state under `/srv/sports-harness/` with stdlib form
 no invariant query, no backup coverage and no crash-safe concurrent writer. The chosen shape takes (a) for the **small,
 queryable, long-lived** rows and (c) for the **large, reproducible, regenerable** ones: the immutable input capture and the raw
 observer bodies live under `/srv/sports-harness/exp/<run_id>/` as hashed newline-delimited JSON, because they are re-derivable
-from the record and would otherwise add tens of GB to a 150 GB database, while runs, arms, orders, fills, observations,
-outcomes, checkpoints and health rows live in `exp_*` tables that `pg_dump` already covers (the nightly dump excludes only the
+from the record and would otherwise add tens of GB to a 150 GB database, while runs, arms, orders, fills, allocations,
+observations,
+outcomes, health rows, checkpoints, mismatches and limitations - **eleven tables** (I5) - live in `exp_*` tables that
+`pg_dump` already covers (the nightly dump excludes only the
 five bulk tape families' **data**), that `create_all` and the migration both declare, and that §3 can read back. A `replay` flag
 is not part of this: isolation is §1.1(b)/(c)'s two capabilities. F65's no-carve-out rule applies unchanged - every index on a
 bulk table is `CONCURRENTLY`, and none of these tables is a bulk table or a partition of one, so their plain indexes go on
@@ -549,24 +697,34 @@ bulk table is `CONCURRENTLY`, and none of these tables is a bulk table or a part
 
 | Addition | Shape | Invariant query (must return 0) |
 |---|---|---|
-| `exp_run` (model) | `run_id uuid pk`, `created_at`, `manifest_hash varchar(64)`, `manifest jsonb`, `code_sha varchar(40)`, `clock_mode varchar(16)`, `status varchar(12)`, `supersedes uuid` | `select count(*) from exp_run where manifest_hash is null or length(manifest_hash) <> 64 or clock_mode not in ('recorded','ideal_grid_15s')` |
+| `exp_run` (model) | `run_id uuid pk`, `created_at`, `manifest_hash varchar(64)`, `manifest jsonb`, `code_sha varchar(40)`, `clock_mode varchar(24)`, `status varchar(12)`, `supersedes uuid` | `select count(*) from exp_run where manifest_hash is null or length(manifest_hash) <> 64 or clock_mode not in ('retained_action_instants','ideal_grid_15s')` |
 | `exp_arm` (model) | `id`, `run_id`, `arm_id varchar(8)`, `label varchar(32)`, `spec jsonb`, `spec_hash varchar(64)`; unique `(run_id, arm_id)` | `select count(*) from exp_arm a where not exists (select 1 from exp_run r where r.run_id = a.run_id)` |
 | `exp_order` (model) | the `PaperOrder` columns plus `run_id`, `arm_id`, `variant_id`, `venue_market_id`, `side`, `prob`, `contracts`, `placed_at`, `expiry`, `queue_ahead_at_place`, `cancelled_at`, `cancel_reason varchar(24)`, `episode_id`; index `ix_exp_order_run_arm (run_id, arm_id, placed_at)` | `select count(*) from exp_order where contracts <= 0 or (cancelled_at is not null and cancelled_at < placed_at)` |
 | `exp_fill` (model) | `id`, `run_id`, `arm_id`, `exp_order_id`, `filled_at`, `contracts`, `prob`, `fee`, `fill_method varchar(16)`, `source_trade_id varchar(64)`, `through bool`; index `ix_exp_fill_trade (run_id, arm_id, source_trade_id)` | `select count(*) from exp_fill f join exp_order o on o.id = f.exp_order_id where f.filled_at > o.expiry or (o.cancelled_at is not null and f.filled_at > o.cancelled_at and f.fill_method = 'queue_model')` |
 | `exp_allocation` (model) | `run_id`, `arm_id`, `variant_id`, `source_trade_id`, `available numeric`, `allocated numeric`; pk `(run_id, arm_id, variant_id, source_trade_id)` | `select count(*) from exp_allocation where allocated > available` |
-| `exp_observation` (model) | `id`, `run_id`, `observed_at`, `available_at`, `sport varchar(8)`, `game_id`, `venue_market_id`, `fair_p numeric`, `source varchar(16)`, `credits integer`, `status varchar(24)`, `body_path text` | `select count(*) from exp_observation where available_at < observed_at or credits < 0` |
+| `exp_observation` (model) | `id`, `run_id`, `observed_at`, `available_at`, `sport varchar(8)`, `game_id`, `venue_market_id`, `fair_p numeric`, `source varchar(16)`, `credits integer`, `credits_last integer`, `credits_remaining bigint`, `status varchar(24)`, `body_path text`, `body_sha256 varchar(64)` (I5: the raw body itself lives only in the file tree; I9: `credits_last`/`credits_remaining` are `parse_credit_headers`' `x-requests-last`/`x-requests-remaining`) | `select count(*) from exp_observation where available_at < observed_at or credits < 0 or (body_path is not null and body_sha256 is null) or credits_remaining < 0` |
 | `exp_outcome` (model) | `id`, `run_id`, `arm_id`, `exp_order_id`, `horizon varchar(8)`, `observed_at`, `value numeric`, `source_age_s integer`, `censored bool`, `missing_reason varchar(24)` | `select count(*) from exp_outcome where (censored and value is not null) or (not censored and value is null and missing_reason is null)` |
 | `exp_book_health` (model) | `id`, `run_id`, `ticker varchar(64)`, `interval_start`, `interval_end`, `classification varchar(24)`, `evidence jsonb` | `select count(*) from exp_book_health where interval_end < interval_start or classification not in ('inactive_confirmed','data_loss_confirmed','unresolved')` |
 | `exp_checkpoint` (model) | `run_id`, `arm_id`, `cursor_event_id bigint`, `state jsonb`, `manifest_hash varchar(64)`, `updated_at`; pk `(run_id, arm_id)` | `select count(*) from exp_checkpoint c join exp_run r on r.run_id = c.run_id where c.manifest_hash <> r.manifest_hash` |
-| `/srv/sports-harness/exp/<run_id>/*.ndjson` + `manifest.json` | hashed capture streams and raw observer bodies | `sha256` of each file equals its manifest entry (checked by `exp report`, recorded in `exp_limitation` when it does not) |
+| `exp_mismatch` (model) | `id`, `run_id`, `arm_id varchar(8)`, `instant`, `venue_market_id`, `kind varchar(32)` (`action`, `price`, `fill`, `cancel_instant`, `expiry`, `capacity`), `expected jsonb`, `actual jsonb`, `cause varchar(32)`, `explained bool not null default false`; index `ix_exp_mismatch_run (run_id, explained)` | `select count(*) from exp_mismatch where (explained and cause is null) or kind not in ('action','price','fill','cancel_instant','expiry','capacity')` |
+| `exp_limitation` (model) | `id`, `run_id`, `kind varchar(40)` (`loop_spacing_unreconstructable`, `kickoff_not_asof`, `availability_unreconstructable`, `capture_hash_mismatch`, `overnight_unanchored`, `arm_unavailable`), `scope jsonb` (the slice, arm or market the limitation applies to), `detail text`, `created_at`; index `ix_exp_limitation_run (run_id, kind)` | `select count(*) from exp_limitation where kind not in ('loop_spacing_unreconstructable','kickoff_not_asof','availability_unreconstructable','capture_hash_mismatch','overnight_unanchored','arm_unavailable') or scope is null` |
+| `/srv/sports-harness/exp/<run_id>/*.ndjson` + `manifest.json` | hashed capture streams and raw observer bodies (`exp_observation.body_path` and `body_sha256` point here; no raw-body table exists) | `sha256` of each file equals its manifest entry (checked by `exp report`, recorded in `exp_limitation` when it does not) |
 
 **Disk cost.** Database side, for one historical run over a three-day slice with three arms: `exp_order` at the observed
 placement rate (32,081 orders in 7 days, ~4,580/day, x3 arms x3 days) is ~41,000 rows at ~200 B plus one index, **~10 MB/run**;
 `exp_fill` and `exp_allocation` are bounded by the print population of the slice (151 distinct trade keys in the review's whole
-post-repair cohort), well under 1 MB; `exp_observation` for a five-day prospective window is 2 sports x 3,600 intervals x ~40
-cohort markets = ~288,000 rows at ~120 B plus an index, **~50 MB**; `exp_outcome` is three horizons per admitted order,
+post-repair cohort), well under 1 MB; `exp_observation` for a five-day prospective window is 3,600 intervals (five days at
+120 s)
+x ~40 markets - the **whole eight-game cohort across both sports**, not per sport (M5) - = ~144,000 rows at ~120 B plus an
+index, **~25 MB** (the earlier `2 sports x` factor double-counted the cohort; the conclusion, tens of MB, is unchanged);
+`exp_outcome` is three horizons per admitted order,
 ~120,000 rows, **~20 MB**; `exp_book_health` is capped at `BOOK_VERIFY_MAX = 200` sampled intervals plus one row per classified
-interval, under 5 MB. A full milestone - say four historical runs and one prospective cohort - is therefore **under 150 MB in
+interval, under 5 MB. The two new tables are bounded by construction: `exp_mismatch` cannot exceed one row per compared action
+per arm (bounded by `exp_order`'s row count and its lifecycle transitions, ~50,000 rows per run, and a run whose unexplained
+mismatches exceed
+`EXP_MISMATCH_MAX = 10,000` stops and reports rather than filling the table), and `exp_limitation` is **at most a few hundred
+rows per run** - one per named limitation kind per affected slice, arm or market, never one per row of data. A full milestone
+- say four historical runs and one prospective cohort - is therefore **under 150 MB in
 the database**, 0.1 % of the 150 GB in use and 0.025 % of the 600 GB budget. File side: the capture of a three-day slice is
 dominated by `orderbook_events` deltas (the executor alone reads ~675,000 delta rows a loop today); bounded to the cohort's
 tickers it is ~1-3 GB per run as compressed-free NDJSON, so `EXP_CAPTURE_MAX_GB = 20` is enforced by `capture.py` before the
@@ -576,31 +734,50 @@ bounds them and the observer goes dormant rather than exceeding either bound.
 
 ## 3. Verification (the plan's last task adds these rows to `docs/superpowers/autopilot/verify.md`)
 
-1. **Experiment tables' invariants.** The nine queries in §2's right-hand column each return **0**. *Every verify once a run
+1. **Experiment tables' invariants.** The **eleven** queries in §2's right-hand column (one per `exp_*` table, I5) each return
+   **0**. *Every verify once a run
    exists; before that the row reads "deferred: no `exp_run` row".*
-2. **Isolation read-back: no experiment row ever entered a production table.** `select count(*) from orders o join exp_run r on
-   true where o.client_order_id like 'exp-%'` = 0; and, for the run's window,
-   `select count(*) from orders where placed_at between :warmup_start and :observation_end and config_hash = :exp_hash` = 0
-   (the experiment computes no `config_hash` and writes none); and `select count(*) from fills where id > :boundary and replay
-   = false and order_id not in (select id from orders)` = 0; and `select count(*) from signals where created_at between
-   :warmup_start and :observation_end and variant_id not in (select variant_id from strategy_variants)` = 0; and
-   `select count(*) from intents i where i.created_at between :warmup_start and :observation_end and not exists (select 1 from
-   signals s where s.id = i.signal_id)` = 0. `strategy_variants` still holds the eight ids of live fact (b) and
-   `criteria_hash` is unchanged. *Every verify during and after a run.*
+2. **Isolation read-back: no experiment row ever entered a production table (I6, C2).** The read-back the experiment cannot
+   fake is a **before/after count**, journaled either side of every run: for each of `orders` (`placed_at`), `fills`
+   (`filled_at`), `intents` (`created_at`) and `signals` (`created_at`),
+   `select count(*) from <table> where <stamp> between :warmup_start and :observation_end` is taken immediately before the run
+   starts and immediately after it ends, and the difference must be **explained entirely by the live executor's own
+   placements** - verified by every new row carrying production's `config_hash`, and every new `orders` row production's
+   `client_order_id` prefix (the experiment computes no `config_hash`, writes no order and owns no prefix, so a row it created
+   would show up as an unexplained increment; revision 1's `client_order_id like 'exp-%'` join could never fire and is
+   deleted). `strategy_variants` still holds the eight ids of live fact (b) and `criteria_hash` is unchanged. Beside them, the
+   **privilege read-back** of C2:
+   `select t, has_table_privilege('harness_exp', t, 'INSERT') from unnest(array['orders','fills','intents','signals',
+   'positions','source_state','research_spend','veto_decisions']) t` is **false on every row**, while
+   `select has_table_privilege('harness_exp', 'exp_order', 'INSERT')` is true - the boundary read directly from the server
+   rather than inferred from the code. *Every verify during and after a run; the privilege pair also on the first verify after
+   the grant.*
 3. **Gate inputs untouched.** `select count(*) from gate_reports where criteria_json ? 'eligibility'` = 0 and the gate report's
    `orders`/`fills` denominators over the run window equal the pre-run values recorded in the journal. *First verify after each
    run.*
-4. **Veto pacing read-backs.** `select day, sum(usd_spent) from research_spend where day >= :monday group by 1` is at or under
-   $25 a day and $150 for the ISO week (unchanged caps), and
+4. **Veto pacing read-backs.** `select day, sum(usd + usd_reserved) from research_spend where day >= :monday group by 1` is at
+   or under **$25 a day**, with the ISO-week total beside it -
+   `select sum(usd + usd_reserved) from research_spend where day >= :monday` at or under **$150** (unchanged caps; the caps are
+   checked against the sum of spent and reserved, which is what `ResearchSpend` stores - there is no `usd_spent` column, I7) -
+   and
    `select reason_code, count(*) from veto_decisions where created_at > now() - interval '24 hours' and decision =
    'veto_skipped_budget' group by 1` names the new `hourly`/`reserved` codes only after the amendment instant; reservations by
-   window: `select window_label, decided, reserved from exp_veto_coverage(:day)` (a `create or replace view` over
-   `veto_decisions` joined to `games`) shows a non-zero **inside-6 h** count on every game day after activation, against the
-   recorded zero of 2026-09-18. *Daily 09:00 line and every verify after activation.*
-5. **The observer's quota accounting.** `select sum(credits) from exp_observation where run_id = :run` is at or under
-   `EXP_OBSERVER_CREDIT_CAP = 60,000`, and the recorder's own month total
-   (`select sum(credits_used) from source_state where ...`) **includes** those credits - the two numbers are compared in the
-   journal, and a discrepancy is a defect, not a rounding. `select count(*) from exp_observation where status =
+   window: `select window_label, decided, reserved from exp_veto_coverage where day = :day` - a **parameterless**
+   `create or replace view` (I8) over
+   `veto_decisions d join veto_queue q on q.signal_id = d.signal_id join games g on g.id = q.game_id`, the authoritative join
+   because `veto_queue` carries `game_id` and `veto_decisions` does not, with the day filtered in the **caller's** `where` -
+   shows a non-zero **inside-6 h** count on every game day after activation, against the recorded zero of 2026-09-18. *Daily
+   09:00 line and every verify after activation.*
+5. **The observer's quota accounting, against the provider's balance (I9).** Three numbers are journaled together: the
+   observer's per-run sum `select sum(credits) from exp_observation where run_id = :run`, at or under
+   `EXP_OBSERVER_CREDIT_CAP = 60,000`; the observer's latest provider balance,
+   `select credits_remaining from exp_observation where run_id = :run and credits_remaining is not null order by observed_at
+   desc limit 1`; and the recorder's latest `recorder.credits_remaining` sample,
+   `select value from metric_samples where name = 'recorder.credits_remaining' order by ts desc limit 1`
+   (`harness/recorder/tick.py:386`). The two balances are the **same provider counter** read by two processes, so they agree to
+   within the calls made between the two reads - at most one observer call, 3 credits - and a wider divergence is a defect, not
+   a rounding. Both must stay above `credits_watch_fraction x odds_monthly_credits` = 2,000,000, the guard
+   `harness/recorder/tick.py:1411` applies and §1.6(i) reuses. `select count(*) from exp_observation where status =
    'exp_skipped_budget'` is journaled beside them. *Every verify while the observer is active.*
 6. **Recorder and executor unharmed.** `exec.loop_ms` p95 in the hour a historical run executes is within 10 % of the hour
    before it (journalled as a pair, the way fix 46's row does); `recorder.tick_ms` and the normalize backlog unchanged;
@@ -612,7 +789,8 @@ bounds them and the observer goes dormant rather than exceeding either bound.
    explained one is in `exp_mismatch` with its cause; a slice with missing input history reads "incomplete/unverifiable", never
    "parity". *Before the first arm comparison is read.*
 9. **Manifest freeze before activation.** For the prospective cohort: `exp_run.status = 'frozen'`, `manifest_hash` recorded in
-   the journal, the cohort's game ids and seed printed, and `exp_run.created_at` **before** the first `exp_observation.observed_at`.
+   the journal, the cohort's game ids and seed printed, and `exp_run.created_at` **before** the first
+   `exp_observation.observed_at`.
    *At activation.*
 10. **The deploy is judged on** rows 2, 3, 5 and 6 plus the executor's own health: `exec.loop_ms` p95 no worse than the
     pre-deploy hour it is compared against, `recorder.tick_ms` and `recorder.rss_mb` journaled before and after, the alembic
@@ -630,7 +808,9 @@ bounds them and the observer goes dormant rather than exceeding either bound.
   container** (`docker compose exec app-research …` in the release runbook's shape), never a new container, cron entry or bind.
   The prospective observer is a **job in `app-research`'s existing worker loop** (`register_pass`), off unless
   `Settings.exp_observer_enabled` is set and a frozen `exp_run` exists. No compose service is added; `app-ws`, `app-exec`,
-  `app-run` and `app-serve` are untouched by 6D.1's own code paths.
+  `app-run` and `app-serve` are untouched by 6D.1's own code paths. `app-research` gains exactly one bind, in the shape the
+  other secrets already use (`- ./secrets/odds_api_key:/run/secrets/odds_api_key:ro`): `-
+  ./secrets/exp_db_password:/run/secrets/exp_db_password:ro` (§4.7).
 - 4.3 **Cooperative limits.** Every historical run sets `statement_timeout = 25s`, `lock_timeout = 1s` and
   `default_transaction_read_only = on` on its source session; walks the tape in bounded batches
   (`EXP_BATCH_ROWS = 20,000`, the executor's own `tape_batch_min` ceiling); yields between batches when
@@ -646,15 +826,56 @@ bounds them and the observer goes dormant rather than exceeding either bound.
   additive tables and indexes stay - no DROP is ever part of a rollback (invariant 5) - and a rolled-back build ignores them.
   The file tree under `/srv/sports-harness/exp/` is left in place; nothing reads it unless a run is resumed.
 - 4.6 **Activation checklist for the prospective cohort** (every step journaled; the run does not start until all are done):
-  (1) **frozen manifest** - `exp_run.status = 'frozen'`, hash recorded, cohort ids and seed printed *(loop)*; (2) **recorded
+  (0) **the `harness_exp` grant and its secret exist** - §4.7's `CREATE ROLE` / `GRANT` / `REVOKE` has been run and
+  `secrets/exp_db_password` is in place *(the user)*; until it is, every run **fails closed** with `IsolationError` at session
+  open and §3 row 2's privilege read-back is the evidence it took effect *(loop)*; (1) **frozen manifest** -
+  `exp_run.status = 'frozen'`, hash recorded, cohort ids and seed printed *(loop)*; (2) **recorded
   measurement boundary** - the activation instant in UTC and CT, written to the journal and to `exp_run` before the first
   observation *(loop)*; (3) **resource preflight** - free space above 25 %, `EXP_CAPTURE_MAX_GB`/`EXP_RAW_BODY_MAX_GB` headroom,
   `exec.loop_ms` p95 and `recorder.tick_ms` recorded as the before-half *(loop)*; (4) **budget and coverage checks** -
-  credits remaining against `EXP_OBSERVER_CREDIT_CAP` and the `credits_watch_fraction = 0.40` guard, the cohort's eligible-market
+  credits remaining against `EXP_OBSERVER_CREDIT_CAP` and the `credits_watch_fraction = 0.40` guard, the cohort's
+  eligible-market
   enumeration complete, coverage tolerances stated *(loop)*; (5) **ordinary release verification** - the deploy carrying the
   observer passes §3 and the standing verify rows *(loop)*; (6) **the veto profile's activation**, if any, is §0.14c's dated
   decision *(the user)*; (7) **any production holding-policy adoption** is §0.14a's dated decision *(the user)*. Steps 6 and 7
-  are not prerequisites of 1-5 and never gate them.
+  are not prerequisites of 1-5 and never gate them. Step 0 **is** a prerequisite of 1-5, and it is the only user step that is.
+- 4.7 **The experiment role and its secret - the one ops step the user performs (C2).** The `harness` application role cannot
+  create a role, so the privilege boundary is a user action, exactly like today's secret placement. Two parts, both one-off:
+
+  *(i) The secret.* The user writes a password of their choosing to `/srv/sports-harness/secrets/exp_db_password` on the
+  Omarchy runtime in the existing shape - `printf '%s' '<password>' > secrets/exp_db_password && chmod 600
+  secrets/exp_db_password` from the runtime directory, no trailing newline, never committed (`secrets/` is ignored) - exactly
+  as `secrets/anthropic_api_key` is placed for `app-research` today (`docs/runbooks/research.md`; the Makefile's NAS scp loop
+  at lines 52-53 is the retired NAS path and is **not** edited). `scripts/release-omarchy.py` creates, copies and reads no
+  secret (its D7 rule); a missing file never blocks a deploy (gate 1): compose then binds a directory at the mount path, the
+  `is_file()` test is false and the experiment stays dormant. `Settings.exp_db_password_file` reads
+  `/run/secrets/exp_db_password` with the `is_file()`-and-non-empty test the other secret files use, and **the loop never reads
+  or prints the value** - the loop tests only `is_file()` and the privilege read-back of §3 row 2.
+
+  *(ii) The grant.* Run once by the user against the `harness` database as its owner role (psql, on the host; the exact text
+  also goes into `docs/runbooks/experiments.md`, which T1 writes, and into the roadmap's `## User-side TODOs`):
+
+  ```sql
+  CREATE ROLE harness_exp LOGIN PASSWORD '<the value in secrets/exp_db_password>';
+  GRANT CONNECT ON DATABASE harness TO harness_exp;
+  GRANT USAGE ON SCHEMA public TO harness_exp;
+  -- read everything, write nothing
+  GRANT SELECT ON ALL TABLES IN SCHEMA public TO harness_exp;
+  REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA public FROM harness_exp;
+  ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO harness_exp;
+  -- write only the experiment's own eleven tables (run after the migration creates them)
+  GRANT INSERT, UPDATE ON exp_run, exp_arm, exp_order, exp_fill, exp_allocation, exp_observation,
+        exp_outcome, exp_book_health, exp_checkpoint, exp_mismatch, exp_limitation TO harness_exp;
+  GRANT USAGE, SELECT ON SEQUENCE exp_arm_id_seq, exp_order_id_seq, exp_fill_id_seq,
+        exp_observation_id_seq, exp_outcome_id_seq, exp_book_health_id_seq,
+        exp_mismatch_id_seq, exp_limitation_id_seq TO harness_exp;
+  ```
+
+  No `CREATEDB`, no second database, no second backup target, no DROP and no change to any production grant: `harness_exp` is a
+  new role that can read and can write eleven additive tables. The migration still runs as the owner role, so nothing about
+  `alembic upgrade head` changes. The order matters - the `GRANT INSERT` lines name tables that exist only after the migration -
+  and the runbook says so; running part (ii) before the release simply errors on the missing tables and is re-run after.
+  *Verification:* §3 row 2's `has_table_privilege` pair, and `\du harness_exp` showing no `Superuser`/`Create DB` attribute.
 
 ## 5. Testing
 
@@ -662,10 +883,15 @@ Every test passes a fixed tz-aware `now` (`datetime(2026, 9, 16, 12, 0, tzinfo=t
 never reads the wall clock. Fixtures come from the recorded capture or from hand-built rows whose expectations are derived
 independently of `harness.execution.fills` (6B's I-13 rule).
 
-- `tests/test_exp_isolation.py` - a write through the source reader raises from PostgreSQL; `ExperimentWriter.insert` refuses
-  every `PRODUCTION_TABLES` member by name; `check_destination` refuses a foreign `dbname`; the package imports no
-  `harness.db.models` at module scope and no gateway/transport module (the `test_gateway.py` /`test_rfq_refusal.py` shape);
-  `source == destination` is recorded, not silently allowed.
+- `tests/test_exp_isolation.py` - **the privilege boundary first (C2)**: against the test PostgreSQL, a session opened for a
+  role that holds `INSERT` on `orders` raises `IsolationError` at open from both `source.reader()` and `ExperimentWriter`
+  (the `has_table_privilege(current_user, 'orders', 'INSERT')` probe), an absent secret file raises the same, and a session
+  under a role granted the §4.7 shape opens and can insert into `exp_run` but has its `insert into orders` refused **by the
+  server**; then the defence in depth - a write through the source reader raises from PostgreSQL, `ExperimentWriter.insert`
+  refuses every `PRODUCTION_TABLES` member by name (including `source_state`, I9), `check_destination` refuses a foreign
+  `dbname`, the package imports no `harness.db.models` at module scope and no gateway/transport module (the `test_gateway.py`
+  /`test_rfq_refusal.py` shape), and `source == destination` is recorded, not silently allowed. No test reads or prints the
+  secret's value.
 - `tests/test_exp_manifest.py` - determinism of the hash; `freeze()` refuses an incomplete manifest; a manifest mismatch
   **rejects resume** and leaves the checkpoint byte-identical.
 - `tests/test_exp_state.py` - two arms in one process cannot see each other's orders, capacity counter, exposure or cursor;
@@ -675,14 +901,20 @@ independently of `harness.execution.fills` (6B's I-13 rule).
 - `tests/test_exp_liquidity.py` - the 10-contract print with 45 overlapping counterfactuals yields at most 10 contracts in one
   portfolio; partials, cancel/re-entry, retry and resume never replenish; two portfolios are never summed.
 - `tests/test_exp_arms.py` - B's weekday (1,000 s), weekend (400 s), sport-wide window (220 s), NFL burst (180 s floor),
-  overnight suspension (last finite allowance retained, age keeps growing), missed fetch (deadline not extended) and regime
+  overnight suspension (I4's closed form: the allowance is `interval_for` at the latest `exec_period_s` step at or before
+  `fair_ts` returning a finite value, and a fixture with no such instant in the capture window takes 1,000 s and is labelled
+  `overnight_unanchored`), missed fetch (deadline not extended) and regime
   transition cases; **a fixture where stale cancellation blocks a later real print and B receives it**; **a fixture where new
   information triggers repricing/edge decay and prevents the apparent counterfactual gain**; `rest_to_expiry` produces a
   different action list from B on the same fixture; A/B cannot read C-only odds (the C observations are in `exp_observation`
   and the A/B market reader never queries it); no lookahead from a later fetch or REST backfill (a row whose availability stamp
   is after the decision instant is invisible).
 - `tests/test_exp_capture.py` / `test_exp_adapter.py` / `test_exp_baseline.py` - event-time versus availability-time handling;
-  the `exec.loop_ms` completion-stamp convention and its sensitivity; a true cancel/replacement chain, a partial fill, an
+  **`resolve_instants()` returns the union of `orders.placed_at`, `order_events.ts`, `intents.created_at`, `fills.filled_at`
+  and the `exec.loop_ms` samples, sorted and deduplicated, and the run carries the `loop_spacing_unreconstructable`
+  limitation row** (C1); the sample `ts` is treated as the decision instant (I1) and the `ts - value_ms` reading is exercised
+  only as the labelled sensitivity; the as-of kickoff reconstruction (I3), including a fixture whose kickoff was revised after
+  the decision - the revised value must not reach `interval_for`; a true cancel/replacement chain, a partial fill, an
   overnight transition, a delayed loop and a gap/recovery each traced independently; missing input history produces
   "incomplete/unverifiable", never silent parity.
 - `tests/test_exp_bookhealth.py` - the four classification fixtures of §1.7; `BOOK_VERIFY_MAX` bounds the sampling.
@@ -696,7 +928,8 @@ independently of `harness.execution.fills` (6B's I-13 rule).
 - `tests/test_exp_report.py` / `test_exp_episodes.py` / `test_exp_forecast.py` / `test_exp_decision.py` - episode and re-entry
   arithmetic; the refusal to sum portfolios; the separation of registered and exploratory tables; the forecast's
   "accrual unidentified" path; `decision.render()` raising on missing evidence.
-- `tests/test_alembic.py` (existing) - the catalogue diff covers the nine new tables and their indexes; `tests/test_schema.py`
+- `tests/test_alembic.py` (existing) - the catalogue diff covers the **eleven** new tables and their indexes, and asserts
+  `len(EXP_METADATA.tables) == 11` (I5); `tests/test_schema.py`
   covers the `create_all` path.
 
 ## 6. Out of scope
@@ -705,11 +938,13 @@ Production adoption of any holding policy (§0.14a, the user's dated decision); 
 confirmation dates and extension rule (§0.14b); any live posture, venue write, real money or `LIVE_TRADING` change; any new
 venue WebSocket subscription or recorder restart for historical work; migration of the production `no_watcher` worker (a later
 migration needs its own parity evidence and version boundary); any cap, tier, provider or bookmakers change; any cadence or
-alternates-window change (gate 5); any new variant id, edit under `harness/variants/`, or change to `MAX_PRIMARY`/`MAX_SECONDARY`;
+alternates-window change (gate 5); any new variant id, edit under `harness/variants/`, or change to
+`MAX_PRIMARY`/`MAX_SECONDARY`;
 any change to a gate criterion, threshold, family, grid, success threshold or cut-off (R1); the gate-eligibility settings (still
 dormant, never set); 6D's own coverage contract, acceptance rows and Task 11 work, which are not reopened or expanded by this
 follow-on; 6E's environment acceptance; 4.6's fun tickets; the dashboard and the weekly report's tables (§0.10); the executor's
-own carried fixes (rows 78, 79, 84, 86, 87), which keep their existing priority and vehicles; a combined-variant portfolio with a
+own carried fixes (rows 78, 79, 84, 86, 87), which keep their existing priority and vehicles; a combined-variant portfolio
+with a
 common liquidity allocator; and a changed book-health policy, which would be a separately frozen later arm. **The study is
 exploratory**; the formal prospective period remains 6F's.
 
@@ -719,11 +954,28 @@ exploratory**; the formal prospective period remains 6F's.
    bounded faster observations, book-health diagnosis, independent veto pacing, accrual forecast) and nothing else.
 2. **Dependencies.** None new: standard library, SQLAlchemy, pydantic, httpx, Typer and pytest as pinned; `pyproject.toml` and
    `constraints.txt` untouched (§4, §6).
-3. **Pre-registered ids.** Untouched (§0.3 posture, §6). No `EXECUTOR_VERSION` or `PRICING_VERSION` bump: no production
-   decision, price, size, order, fill or gate input changes, because the only production-code edits are a defaulted
-   `HoldingPolicy` field with a dead branch (§0.9, §1.6a), a dormant claim-order setting (§1.8c) and help text (§1.1f); §5's
-   byte-identical assertions are the evidence, and D6 carries the reversal.
-4. **Schema.** Additive only and declared where this repo looks: nine models, their plain indexes on `__table_args__` and in
+3. **Pre-registered ids.** Untouched (§0.3 posture, §6). No `EXECUTOR_VERSION` or `PRICING_VERSION` bump. The complete list of
+   edits outside `harness/experiments/`, with the reason each needs no version boundary (I10):
+   (i) `harness/execution/policy.py` - one defaulted field `cadence_allowance: CadenceAllowance | None = None` on
+   `HoldingPolicy`; `BASELINE` is unchanged, so every live construction passes `None`.
+   (ii) `harness/execution/plan.py` - one `if policy.cadence_allowance is not None:` branch inside `_fair_stale` (§1.6a);
+   unreachable while the field is `None`, which §5's byte-identical corpus assertion proves.
+   (iii) `harness/cli.py` - the `exp` command group and its help text; no production decision path is entered by registering a
+   command, and no existing command's behaviour changes.
+   (iv) `harness/research/spend.py` - the reservation check inside `reserve_spend` (`harness/research/spend.py:213`); a
+   **no-op while `Settings.veto_pacing_profile is None`**, and the daily/weekly caps themselves are untouched.
+   (v) `harness/research/veto.py` - the claim order behind the same setting; `_OLDEST_BUCKET`'s ordering is byte-identical when
+   the profile is `None` (§5 asserts it).
+   (vi) `harness/research/worker.py` - one `register_pass(...)` line (`harness/research/worker.py:88`); the pass is **inert
+   unless both `Settings.exp_observer_enabled` is set and a frozen `exp_run` row exists**, and it never touches a production
+   table.
+   (vii) `harness/config/settings.py` - new fields with inert defaults (`exp_db_password_file`, `exp_observer_enabled = False`,
+   `veto_pacing_profile = None`, the `EXP_*` bounds); a declaration changes no behaviour.
+   No production decision, price, size, order, fill or gate input changes under any of the seven; §5's byte-identical
+   assertions are the evidence, and D6 carries the reversal.
+4. **Schema.** Additive only and declared where this repo looks: **eleven** models (§2, I5 - `exp_mismatch` and
+   `exp_limitation` are declared, and the raw observer bodies live in the hashed file tree, not in a table), their plain
+   indexes on `__table_args__` and in
    `_INDEX_DDL`, one `create or replace view`, and a migration carrying the same statements with `downgrade()` = `pass` (§2);
    no DROP, RENAME, TRUNCATE, DELETE or backfill; F65 unaffected (no bulk table gains an index); migration number assigned by
    the controller at merge.
@@ -733,22 +985,36 @@ exploratory**; the formal prospective period remains 6F's.
    `tests/test_rfq_refusal.py::test_the_transport_refuses_the_exact_quote_path` and
    `::test_no_module_in_the_repository_names_the_quote_path`, plus new
    `tests/test_exp_isolation.py::test_no_experiment_module_imports_a_gateway_or_transport`,
-   `::test_the_source_capability_cannot_write`, `::test_the_writer_refuses_every_production_table` and
-   `::test_a_foreign_destination_is_refused_before_any_work`.
+   `::test_the_source_capability_cannot_write`, `::test_the_writer_refuses_every_production_table`,
+   `::test_a_foreign_destination_is_refused_before_any_work` and C2's
+   `::test_a_session_whose_role_can_insert_into_orders_is_refused_at_open`.
 6. **Money.** No new spend, no new provider, no tier change; `veto_daily_usd_cap`/`veto_weekly_usd_cap` untouched (invariant 7)
    and the pacing profile changes **when** the cap binds, never the cap. The only metered calls are arm C's Odds API reads:
-   `EXP_OBSERVER_CREDIT_CAP = 60,000` credits per run is enforced **in code** before every call (§1.6i), the cost is counted in
-   the recorder's aggregate quota accounting (`source_state`'s `x-requests-last` sum against `odds_monthly_credits = 5,000,000`
-   and the `credits_watch_fraction = 0.40` guard), the observer goes **dormant** when the cap or the guard is reached and labels
-   every unmade scheduled read `exp_skipped_budget`, and §3 row 5 reads both numbers back. Anthropic spend is unchanged: the
+   `EXP_OBSERVER_CREDIT_CAP = 60,000` credits per run is enforced **in code** before every call, and so is the recorder's own
+   guard, `remaining < credits_watch_fraction x odds_monthly_credits` (0.40 x 5,000,000, `harness/recorder/tick.py:1411`),
+   evaluated on the **provider's own balance**: every observer call parses `x-requests-last`/`x-requests-remaining` with
+   `parse_credit_headers` and stores them on its `exp_observation` row, so the shared aggregate both processes read is the
+   provider counter itself and no privilege on `source_state` is needed or granted (§1.6i, I9). The observer goes **dormant**
+   when the cap or the guard is reached and labels every unmade scheduled read `exp_skipped_budget`; §3 row 5 reads the three
+   numbers back. Anthropic spend is unchanged: the
    veto's call count is governed by the same caps through the same `reserve_spend`.
-7. **Secrets.** None new; no component reads `secrets/` beyond the already-provisioned `odds_api_key` the recorder's client
-   already uses and the already-provisioned `anthropic_api_key` the veto already uses. No key handling changes.
-8. **Ops.** §4: full recipe under R4, rollback to the previous sha, no new container, compose service, cron entry, secret,
-   outbound host, bind or cadence; one job inside the existing `app-research` container; quiet windows and cooperative limits.
-9. **Verification.** §3 carries one invariant query per new table (§2's right-hand column), the isolation read-backs, the veto
-   pacing read-backs, the observer's quota accounting, expected values by time of day (rows 1, 4, 5, 7) and the deploy judgment
-   (row 10); every read names the index or the cap that bounds it.
+7. **Secrets.** **One new file, `secrets/exp_db_password`** (C2, §4.7), in the existing shape: a runtime file at mode 600 the
+   user places under `/srv/sports-harness/secrets/` (absence never blocks a deploy - gate 1), one read-only compose bind on
+   `app-research`, one `Settings.exp_db_password_file` field tested with `is_file()` and a non-empty read. **The loop never
+   reads or prints its value**; the user writes it once. No other component reads `secrets/` beyond the already-provisioned
+   `odds_api_key` the recorder's client already uses and the already-provisioned `anthropic_api_key` the veto already uses. No
+   key handling, transport or outbound host changes.
+8. **Ops.** §4: full recipe under R4, rollback to the previous sha, no new container, compose service, cron entry, outbound
+   host or cadence; one job inside the existing `app-research` container; quiet windows and cooperative limits. Two additions,
+   both C2's and both one-off: the `secrets/exp_db_password` file with its single read-only bind (item 7), and §4.7's
+   `CREATE ROLE` / `GRANT` / `REVOKE`, which **the user** runs once - no CREATEDB, no second database, no second backup target,
+   and no production grant altered. Until both exist every run fails closed, so neither blocks a release (§4.6 step 0).
+9. **Verification.** §3 carries one invariant query per new table (**eleven**, §2's right-hand column), the isolation
+   read-backs - now a before/after count of the four production tables plus the server-side `has_table_privilege` pair, both of
+   which can actually fire (I6, C2) - the veto pacing read-backs against `sum(usd + usd_reserved)` and the parameterless
+   `exp_veto_coverage` view (I7, I8), the observer's quota accounting against the provider balance (I9), expected values by
+   time of day (rows 1, 4, 5, 7) and the deploy judgment (row 10); every read names the index or the cap that bounds it, and no
+   row is vacuous.
 10. **Decisions taken on the user's behalf.** §8's **D1-D18**, each with source, rationale, cost if wrong, blast radius and the
     exact reversal; the three questions held for the user are §0.14.
 11. **Out of scope** matches the roadmap's boundaries (§6): no production policy adoption, 6F's dates, no live posture, no new
@@ -757,7 +1023,8 @@ exploratory**; the formal prospective period remains 6F's.
     independent starts; §1.2 follows §1.1; §1.3 follows §1.2; §1.4 and §1.5 follow §1.3 and are serialized over `adapter.py`;
     §1.6 follows §1.5 and is serialized with §1.4 over `adapter.py`; §1.7 needs only §1.1 and may use §1.3's capture; §1.9
     follows §1.6 and §1.7; §1.10 and §1.11 follow §1.9. `harness/execution/plan.py` and `policy.py` are touched by §1.6 alone;
-    `harness/research/*` by §1.8 alone; `harness/db/models.py`, `schema.py` and the migration by §1.4's task alone (§1.9's
+    `harness/config/settings.py` and `docker-compose.yml` by T1 alone (§4.7);
+    `harness/research/*` by §1.8 and T7's one `register_pass` line, which are in different waves; `harness/db/models.py`, `schema.py` and the migration by §1.4's task alone (§1.9's
     view is added there too). `verify.md` is last.
 
 ## 8. Decisions taken on the user's behalf
@@ -768,16 +1035,16 @@ exploratory**; the formal prospective period remains 6F's.
 |---|---|---|---|---|---|---|
 | D1 | The milestone number is **6D.1**, between 6D and 6F, in this repository | pre-loaded (U10; draft §0, §8) | the user's own question was whether it should be its own milestone; the roadmap row and decision 4's follow-on already name it | a renumbering of one roadmap row and three file names | documentation | renumber in the roadmap, the spec and the plan |
 | D2 | Same repository and shared core: no second pricing, planning, queue or matching implementation | pre-loaded (U10 "shared algorithms and isolated state"; draft §1, §8) | a second implementation cannot be compared with the live one, and the review's whole point is that the live model is the one under test | a shared-core extraction that changes default behaviour; §5's byte-identical assertions are the guard | files, production code paths | revert the extraction; the defaulted-argument shape makes each step independently revertible |
-| D3 | Isolated experiment storage (draft §1, §8) realised as **additive `exp_*` tables in the `harness` database plus a hashed file capture**, not a scratch database and not files alone | model (the draft left "an explicitly named scratch database or file-backed state" open) | the `harness` role is assumed to lack CREATEDB (a new database is an ops action the user performs), `deploy/backup/dump.sh` covers only the named database, and `verify.md`'s invariant queries all run against `harness`; the draft's "reject a production destination" is honoured as a capability refusal that a flag cannot give (§1.1) | the boundary is a code property rather than a database property: a defect in `ExperimentWriter` could in principle reach a production table, which §5's refusal tests and §3 row 2's read-backs are sized to catch | DB additive, files | point `ExperimentWriter` at a named scratch database (one URL setting) once the user creates one; the writer's metadata already contains only `exp_*` tables |
+| D3 | Isolated experiment storage (draft §1, §8) realised as **additive `exp_*` tables in the `harness` database plus a hashed file capture**, written **only by the least-privileged role `harness_exp`** (§4.7), not a scratch database and not files alone | model for the storage (the draft left "an explicitly named scratch database or file-backed state" open); C2 for the privilege boundary | the `harness` role is assumed to lack CREATEDB (a new database is an ops action the user performs), `deploy/backup/dump.sh` covers only the named database, and `verify.md`'s invariant queries all run against `harness`; the draft's "reject a production destination, and fail closed if isolation cannot be established" is then honoured by the **server**: under `harness_exp` no production table is a possible destination, whatever the code does | the boundary is now a database property, so the residual cost is an **ops** one: the role or the secret is missing and every run refuses to start (fail closed, §4.6 step 0), or the grant is made wider than §4.7's text and §3 row 2's `has_table_privilege` read-back catches it on the next verify. A defect in `ExperimentWriter` can no longer reach a production table | DB additive, files, one user-run grant | drop the role (`REVOKE` + `DROP ROLE harness_exp`) and the experiment stops; or point `ExperimentWriter` at a named scratch database (one URL setting) if the user ever creates one - the writer's metadata already contains only `exp_*` tables |
 | D4 | Initial arms are **A/B/C only** | pre-loaded (draft §4, §8) | avoids searching the six-policy grid and avoids changing quote aggression and capacity at the same time as freshness | a genuinely better parameter goes unmeasured this milestone | documentation, run scope | add a fourth `ArmSpec`; the runner is arm-generic |
 | D5 | The faster-observation proposal is **120 s featured reads** | pre-loaded (draft §4, §8) | it is the sport-wide game-window cadence the recorder already uses, so it needs no new endpoint and no new cost model | a slower or faster interval would answer a slightly different question | run scope, credits | change `EXP_OBSERVE_INTERVAL_S`; the cap arithmetic scales linearly |
 | D6 | Arm B is implemented as **one defaulted field on the existing `HoldingPolicy`** (`cadence_allowance`) and one branch inside `_fair_stale`, not as a new policy module | model | 6D already established that shape and proved the live path stays bit-identical when nothing is passed; a parallel mechanism would be a second place the freshness rule lives | one more field on a frozen dataclass; if the branch were ever reachable in production the live rule would widen, which §5's byte-identical test and D11's version decision guard | file, production code path | delete the field and the branch (two edits) |
 | D7 | B's interval is `cadence.interval_for` evaluated at the **fair row's creation instant**, not at the decision instant and not from the order's own time to kickoff | model (draft §4 "derive the interval from the recorder's actual sport-wide schedule") | entering a game window would otherwise retroactively shorten an already-priced row's allowance, which is a different rule from the one the draft states | a boundary-crossing row gets the wider allowance for the rest of its life; the regime-transition tests bound it | file, arm results | evaluate at `now` instead (one argument) |
-| D8 | The overnight rule is "retain the **last finite** allowance"; a missed fetch never extends its own deadline | pre-loaded (draft §4) | the draft states both; no scheduled fetch is not infinite validity | an overnight row is cancellable earlier or later than the intended posture | arm results | change the retention rule in `arms.py` |
+| D8 | The overnight rule in closed form (I4): **`interval_for` evaluated at the latest instant at or before `fair_ts` at which it returns a finite value, walking back in `exec_period_s` steps within the capture window; if none exists the row takes the weekday off-window value 1,000 s and is labelled `overnight_unanchored`**; a missed fetch never extends its own deadline | pre-loaded (draft §4) for the rule, I4 for the form | the draft states both halves; "the last finite allowance" was not evaluable by a test or a reader, and this is | an unanchored row cancels at 1,000 s instead of an unknowable earlier value; those rows are counted and labelled | arm results | change the walk-back rule in `arms.py`; the fallback value is one constant |
 | D9 | The first cohort is **eight games, sport-balanced, 24-120 h to kickoff**, chosen by `sha256(seed \|\| game_id)` | pre-loaded (draft §4, §8) | the stratum is not scarce (15 NFL / 56 NCAAF in that window today) and a deterministic hash is auditable | a small cohort cannot estimate full-universe capacity, which §1.6f already refuses to claim | run scope | freeze a new manifest with a larger cohort |
 | D10 | The administrative bound is **14 calendar days** after activation, on the first fully followed cohort | pre-loaded (draft §4, §8) | an exploratory feasibility deadline, explicitly not a significance stopping rule | a cohort with a long tail is cut off; censored rows are labelled, not dropped | run scope | freeze a new manifest with another bound |
-| D11 | No `EXECUTOR_VERSION` / `PRICING_VERSION` bump | model | nothing a version boundary separates changes: the two production edits are a dead branch and a dormant setting (§7 item 3) | if a branch were reachable, the boundary would be missing; §5's equality tests and §3 row 2 are the guards | file | bump before the deploy |
-| D12 | The experiment package is **`harness/experiments/execution_viability/`** with thirteen small modules, and no production module imports it | model (draft §1 "proposed as") | keeps the blast radius of a defect inside the package and makes the import direction testable | a layout change later costs a rename | files | rename the package |
+| D11 | No `EXECUTOR_VERSION` / `PRICING_VERSION` bump | model | nothing a version boundary separates changes: **§7 item 3 lists all seven production-code edits with the reason each is inert** - a defaulted field, a dead branch, a CLI registration, a no-op reservation check while `veto_pacing_profile is None`, a claim order behind the same setting, a `register_pass` line inert unless `exp_observer_enabled` and a frozen `exp_run` exist, and settings declarations (I10) | if a branch were reachable, the boundary would be missing; §5's equality tests and §3 row 2 are the guards | file | bump before the deploy |
+| D12 | The experiment package is **`harness/experiments/execution_viability/`** with **fourteen** small modules (`veto_profile.py` included, M4), and no production module imports it | model (draft §1 "proposed as") | keeps the blast radius of a defect inside the package and makes the import direction testable | a layout change later costs a rename | files | rename the package |
 | D13 | The CLI is one group, **`harness exp`**, with seven subcommands added as each lands | model (draft §1 "add a CLI entry only once its implementation exists") | matches `variants`, `migrate`, `futures` and `parlay`; keeps `policy-compare` untouched | a name collision with a later group | file | rename the group |
 | D14 | The prospective observer is a **job inside `app-research`**, not a compose service | model (draft §1 leaves it open) | no new container, no new bind, no new restart surface, and the research worker already owns metered outbound calls and the spend path | the observer shares a process with the veto worker, so a slow call delays veto passes; §4.3's yield guard and the dormancy rule bound it | Omarchy container (existing) | move it to its own one-shot CLI invocation under the same limits |
 | D15 | The checkpoint format is **one `exp_checkpoint` row per `(run, arm)`** carrying a JSONB state blob plus the manifest hash | model | resume must be refused on a manifest mismatch, which needs the hash beside the state; JSONB keeps `SimState`'s lists (`prints`, `buckets`, `trade_ids`) without a second schema | a very long run's blob grows; the horizon pruning in `SimState` already bounds it | DB additive | write the blob to the file tree instead |
@@ -792,13 +1059,24 @@ T1, T5 and T6 are opus-implementer, sonnet-reviewer at the controller's discreti
 because it touches `reserve_spend`.
 
 **Wave 1 - independent starts (may run in parallel, no shared file):**
-- **T1. Freeze the experiment contract and isolate its capabilities** (§1.1, §1.2, §0.4-§0.6).
+- **T1. Freeze the experiment contract and isolate its capabilities** (§1.1, §1.2, §4.7, §0.4-§0.6). T1 owns C2's whole
+  privilege boundary on the code side: `Settings.exp_db_password_file` and `exp_database_url()`, the `EXP_DB_ROLE` constant, the
+  `has_table_privilege(current_user, 'orders', 'INSERT')` probe raising `IsolationError` **at session open** in both
+  `source.reader()` and `ExperimentWriter`, the fail-closed behaviour when the secret is absent, the compose bind, and **the runbook page `docs/runbooks/experiments.md`** carrying §4.7's exact
+  `CREATE ROLE`/`GRANT`/`REVOKE` text, the secret-placement command and the `has_table_privilege` verification (the same text
+  the loop adds to the roadmap's `## User-side TODOs`). T1 **does not block** on the user running it: the tests use a role the
+  test database creates, and every run without the grant fails closed.
   *Files:* `harness/experiments/__init__.py`, `harness/experiments/execution_viability/{__init__,manifest,source,storage}.py`,
-  `harness/cli.py`, `harness/execution/policy.py` (caption only), `tests/test_exp_isolation.py`, `tests/test_exp_manifest.py`,
+  `harness/cli.py`, `harness/config/settings.py` (**all** the milestone's new fields, declared once with inert defaults -
+  `exp_db_password_file`, `exp_observer_enabled = False`, `veto_pacing_profile = None` and the `EXP_*` bounds - so no later task
+  reopens the file and wave 1 has no shared file), `docker-compose.yml` (one read-only bind on `app-research`),
+  `docs/runbooks/experiments.md`, `harness/execution/policy.py` (caption only),
+  `tests/test_exp_isolation.py`, `tests/test_exp_manifest.py`,
   `tests/test_exp_cli.py`. *Depends on:* nothing; inspect latest `main` and active worktrees first.
 - **T6. Pace the shadow veto independently** (§1.8, §0.8, §0.14c).
-  *Files:* `harness/research/veto.py`, `harness/research/spend.py`, `harness/config/settings.py`,
-  `harness/experiments/execution_viability/veto_profile.py`, `tests/test_veto_pacing.py`, `tests/test_research_spend.py`.
+  *Files:* `harness/research/veto.py`, `harness/research/spend.py`,
+  `harness/experiments/execution_viability/veto_profile.py`, `tests/test_veto_pacing.py`, `tests/test_research_spend.py`
+  (it **reads** `Settings.veto_pacing_profile`, which T1 declares; it does not edit `settings.py`).
   *Depends on:* T1 for the package only (its profile module may land after T1's `__init__`); independent of T2-T5 and of every
   arm result. **Independently releasable** and independently mergeable; ships dormant.
 - **T5. Investigate book inactivity separately from feed failure** (§1.7).
@@ -809,7 +1087,10 @@ because it touches `reserve_spend`.
 - **T2. Capture the inputs and reproduce a baseline lifecycle** (§1.3).
   *Files:* `harness/experiments/execution_viability/{capture,adapter}.py`, `tests/test_exp_capture.py`,
   `tests/test_exp_adapter.py`, `tests/test_exp_baseline.py`. *Depends on:* T1.
-- **T3. Carry independent arm state and conserve liquidity** (§1.4, §1.5, §2).
+- **T3. Carry independent arm state and conserve liquidity** (§1.4, §1.5, §2). Declares **all eleven** `exp_*` tables (I5):
+  the nine of revision 1 plus `exp_mismatch` and `exp_limitation`, with `exp_observation` carrying `body_path`, `body_sha256`,
+  `credits_last` and `credits_remaining` (T7 fills the last two); the raw bodies stay in the file tree and **no** raw-body
+  table is created.
   *Files:* `harness/db/models.py`, `harness/db/schema.py`, `migrations/versions/00NN_phase6d1_exec_viability.py`,
   `harness/experiments/execution_viability/{adapter,storage,liquidity}.py`, `tests/test_exp_state.py`,
   `tests/test_exp_liquidity.py`, `tests/fixtures/exp_print_10_contracts.json`, `tests/test_alembic.py`. *Depends on:* T2.
@@ -822,9 +1103,13 @@ because it touches `reserve_spend`.
   `tests/test_exp_episodes.py`, `tests/test_exec_plan.py`. *Depends on:* T3. Serialized with T3 over `adapter.py`.
 
 **Wave 4 - the prospective cohort (gated as §4.6 states):**
-- **T7. Collect the bounded faster-observation cohort** (§1.6e-i, §4.2, §4.6).
+- **T7. Collect the bounded faster-observation cohort** (§1.6e-i, §4.2, §4.6). Every observer call parses the provider's
+  credit headers with `harness.feeds.odds_api.parse_credit_headers` and writes `credits_last` / `credits_remaining` onto the
+  `exp_observation` row (I9), evaluates `tick.py:1411`'s guard on that balance before the next call, and writes no
+  `source_state` row; it reuses `harness/pricing/fair.py`'s pure arithmetic and calls no `compute_*_fair_values` entry point
+  (I12).
   *Files:* `harness/experiments/execution_viability/observer.py`, `harness/research/worker.py` (one `register_pass` line),
-  `harness/config/settings.py` (two fields), `tests/test_exp_observer.py`. *Depends on:* T4, T5 and §4.6's steps 1-5. The code
+  `tests/test_exp_observer.py` (it reads `Settings.exp_observer_enabled` and the `EXP_*` bounds, which T1 declares). *Depends on:* T4, T5 and §4.6's steps 1-5. The code
   may land and be released before activation; **activation is a separate, journaled step** and C is reported unavailable rather
   than bought if the budget or coverage preflight fails.
 - **T8. Finish the cohort and make the decision reviewable** (§1.10, §1.11).
@@ -836,9 +1121,13 @@ because it touches `reserve_spend`.
 
 ## 10. Notes for the plan writer
 
-- The `exec.loop_ms` timestamp convention (§1.3d) is the single most load-bearing unresolved fact in T2: the p50 loop is 16.8 s
-  and the p95 is 24.2 s, so treating the sample's `ts` as the decision instant misplaces every replayed decision by most of a
-  loop. T2's first validation line should be the resolution of that convention, before any baseline comparison is attempted.
+- The replay clock is **resolved, and it is not the loop clock** (§1.3d, C1). `exec.loop_ms` is sampled every
+  `metric_sample_s = 60` s, so the 1,158 rows of live fact (f) are samples, not loops - the executor stepped roughly
+  3,500-5,000 times that day - and a replay stepping only those samples would thin the decision clock about fourfold. T2 steps
+  `capture.resolve_instants()`: the union of `orders.placed_at`, `order_events.ts`, `intents.created_at`, `fills.filled_at`
+  and the samples. The sample's `ts` is `_locked_step`'s `now`, the decision instant itself (`loop.py:717` writes
+  `record_many(..., ts=now)`, I1); `ts - value_ms` is a labelled sensitivity only. T2's first validation line is the resolved
+  instant count printed beside the live loop estimate, with the `loop_spacing_unreconstructable` limitation row written.
 - The featured Odds API endpoint is **per sport**, not per event (`OddsApiClient.fetch_featured(sport)` with
   `FEATURED_MARKETS`), so the cohort's size does not bound arm C's credit cost and the eight-game restriction is about which
   observations are *used*, not about what is fetched. A plan task that assumes per-game fetching will size the budget wrongly.
@@ -850,3 +1139,27 @@ because it touches `reserve_spend`.
   coverage, expiry-backlog and storage duties keep theirs. This milestone waits on none of them and blocks none of them.
 
 ## Rulings
+
+The controller's rulings on the revision-1 review (2026-09-18 13:54 CT), copied verbatim and applied in the sections named
+beside each one; the review is `.superpowers/sdd/results/design-6d1-review.md` and the rulings file is
+`.superpowers/sdd/plan-next-phase6d1/design-rulings.md`. Format: `Ruling <id>: <decision> - <why> - <cost if wrong>`.
+
+- Ruling C1: accepted - §1.3d states that per-loop instants are retained nowhere (`exec_heartbeat` is one overwritten row; `exec.loop_ms` is sampled every `metric_sample_s = 60` s, so the live fact "1,158 loops in 24 h" is 1,158 samples and the executor stepped roughly 3,500-5,000 times); `capture.resolve_instants()` is defined as the ordered union of the retained decision-bearing stamps (`orders.placed_at`, `order_events.ts`, `intents.created_at`, `fills.filled_at`) plus the `exec.loop_ms` samples; the unreconstructable spacing is a named `exp_limitation` row and the resolved instant count is printed beside the live loop estimate; `clock_mode = ideal_grid_15s` stays the labelled sensitivity; §1.3's expected result and §1.3f's acceptance are restated as action parity **at the retained action instants** (the stamps are the instants at which recorded actions occurred) and no parity claim is made over the thinned opportunity clock; the header live fact (f) and §10 bullet 1 are corrected - why: a 4x-thinned decision clock delays every arm's reaction and would make the headline A/B comparison a sampling artefact, the exact class of defect 6B's D15 suspends parity for - cost if wrong: an acceptance narrower than the draft's, stated as such, with the sensitivity run as the falsifier.
+- Ruling C2: accepted - the `exp_*`-in-`harness` storage stands (D3) and gains the privilege boundary: one least-privileged role `harness_exp` with `SELECT` on the production tables and `INSERT`/`UPDATE` only on `exp_*` (and `USAGE` on the sequences they own), created by a single `CREATE ROLE` + `GRANT`/`REVOKE` step **the user performs** (the loop writes the exact SQL into the runbook and lists it in the roadmap's User-side TODOs; no CREATEDB, no second database, no second backup target); both capabilities connect through one new settings field read from a new conditional secret file (the Makefile's existing conditional-push pattern; never printed, never read by the loop), and `source.reader` and `ExperimentWriter` each raise `IsolationError` at session open when `has_table_privilege(current_user, 'orders', 'INSERT')` is true or the secret is absent, so every run **fails closed** until the grant exists and T1 does not block on it; the in-process refusals and the import test stay as defence in depth; §4.6 gains the grant as step 0 and §3 gains the privilege read-back; D3's "cost if wrong" is rewritten - why: the adopted draft requires "reject a production destination, and fail closed if isolation cannot be established", and an in-process guard under the production role satisfies neither; a stray write during a run would be near-indistinguishable from production rows and invariant 5 forbids deleting it - cost if wrong: one user command and one secret file before the first run; a listed secret file is conditional, never blocking (gate 1).
+- Ruling I1: accepted - §1.3d's convention sentence becomes "the sample's `ts` is `_locked_step`'s `now`, the decision instant itself"; the `ts - value_ms` reading survives only as a labelled falsifier sensitivity; §10 bullet 1 and §5's capture tests are reworded - why: the reviewer read `_locked_step` and `telemetry.record_many(..., ts=now)` - cost if wrong: none.
+- Ruling I2: accepted - §1.6(a) writes the branch out: when `policy.cadence_allowance is not None`, `allowance = max(int(cfg["stale_s"]), interval + s.tick_budget_s)`, **replacing** `market.stale_allowance_s` rather than widening it; the regime table (180 s burst) is the authority - why: the draft's formula is `max(variant.stale_s, scheduled_interval + tick_budget_s)` - cost if wrong: none.
+- Ruling I3: accepted - §1.3(a) and §1.6(b) state that the kickoff list handed to `interval_for` is reconstructed as of the evaluation instant from retained schedule history (`games` row versions where the capture keeps them, else the earliest retained value), and that a slice whose kickoffs cannot be reconstructed as-of is labelled in `exp_limitation` and excluded from B's regime-sensitive rows - why: a revised kickoff is lookahead §1.3(b) forbids - cost if wrong: fewer regime-sensitive rows, labelled.
+- Ruling I4: accepted - §1.6(d)/D8 define the overnight rule in closed form: "`interval_for` evaluated at the latest instant at or before `fair_ts` at which it returns a finite value, walking back in `exec_period_s` steps within the capture window; if none exists the row takes the weekday off-window value 1,000 s and is labelled `overnight_unanchored`" - why: testable, and matches the draft's "no scheduled fetch is not infinite validity" - cost if wrong: an unanchored row cancels at 1,000 s instead of an unknowable earlier value; counted and labelled.
+- Ruling I5: accepted - §2 declares `exp_mismatch` and `exp_limitation` with shape, invariant query and cardinality bound (eleven tables); raw response bodies live in the hashed file tree only, `exp_raw_body` is removed from the design and `exp_observation` carries the body's path and sha256; §3 row 1 and `EXP_METADATA` say eleven - why: the migration, `create_all`, the allow-list and the catalogue test must agree - cost if wrong: none.
+- Ruling I6: accepted - §3 row 2 becomes the pre-run and post-run counts of `orders`, `fills`, `intents` and `signals` rows stamped inside `[warmup_start, observation_end]` (journaled before and after each run; equal within the live executor's own placements, verified by `config_hash` and `client_order_id` prefix being production's) plus C2's privilege read-back; the vacuous join is deleted - why: the row as written cannot fire - cost if wrong: none.
+- Ruling I7: accepted - §3 row 4 reads `select day, sum(usd + usd_reserved) from research_spend where day >= :monday group by 1` with the ISO-week total beside it - cost if wrong: none.
+- Ruling I8: accepted - `exp_veto_coverage` is a parameterless view joining `veto_decisions -> veto_queue -> games` (the authoritative join: `veto_queue` carries `game_id`), day filtered in the caller's `where` - cost if wrong: none.
+- Ruling I9: accepted with one modification - (a) as the reviewer states: the observer refuses a call whenever the recorder's own guard would (`remaining < credits_watch_fraction * odds_monthly_credits`, tick.py:1411's expression) or its run cap is reached; (b) **not** as a `source_state` exception: no member of the writer's refusal list is lifted and `harness_exp` gets no privilege on `source_state`; instead every observer call records the provider's `x-requests-last`/`x-requests-remaining` headers (`parse_credit_headers`) in `exp_observation`, so the one shared aggregate is the provider balance both processes read on every call, and §3 row 5 reads `recorder.credits_remaining`'s latest sample beside `exp_observation`'s latest `credits_remaining` and the observer's per-run sum; `sum(credits_used)` is deleted from the design - why: the draft's "aggregate quota accounting" is the provider balance, and widening the role grant to a production table for a counter would weaken C2 - cost if wrong: the recorder's metric lags the observer's spend by at most one observer call (3 credits).
+- Ruling I10: accepted - §7 item 3 lists every production-code edit (`policy.py` field, `plan.py` branch, `cli.py` help text, `research/spend.py` reservation check, `research/veto.py` claim order, `research/worker.py` `register_pass` line, `config/settings.py` fields) and states per edit why no version boundary is needed: the `register_pass` is inert unless `exp_observer_enabled` and a frozen `exp_run` exist, and the reservation check is a no-op while `veto_pacing_profile is None`; D11 cites the list - cost if wrong: none.
+- Ruling I11: accepted; D16 stands - §1.11's veto bullet becomes "implemented, preflighted against stored arrivals under unchanged caps, shipped dormant, with the §0.8 amendment record and boundary fields prepared; the boundary instant is written at the user's activation", and §1.11 states that the dormant state closes the milestone's veto component - why: journal 272 ("the user rules before any code" on when the cap binds) and U10's bounded implementation are both honoured; activation changes H9's decided population and is the user's - cost if wrong: the near-kickoff coverage gap persists until the user rules, quantified by the preflight.
+- Ruling I12: accepted - §1.6(e) names the pure computation the observer reuses (the consensus/direct-fair arithmetic and `stale_allowance_s` derivation) and states that no `compute_*_fair_values` entry point is called and nothing writes `fair_values` - cost if wrong: none.
+- Ruling I13: accepted - both draft sentences are restored verbatim: (a) "A slower production loop caused by historical churn remains part of recorded-clock replay; a prospective equal-resource run can test the benefit of reduced workload separately" in §1.3(d); (b) "Resting venue depth and trade/delta reconciliation are handled consistently with the shared simulator" in §1.5, with the sentence that `SimState`'s `prints`/`buckets` ledger and `RECON_HORIZON` are not re-implemented above the simulator - cost if wrong: none.
+- Ruling M1-M5: all taken in revision 2 as the reviewer states them (M1 the `"weather"` label; M2 both `ExecSettings` and `Settings` names; M3 the sentence that B is tighter in the burst regime and identical in the game window, so its effect is the off-window regimes; M4 fourteen modules; M5 the `exp_observation` unit restated) - cost if wrong: none.
+- Ruling (live facts): the controller appends a correction line to `.superpowers/sdd/plan-next-phase6d1-live-facts.txt` (the `exec_loops_24h` row counts `exec.loop_ms` samples, not loops) and the `plan-next` journal entry quotes the corrected reading - cost if wrong: none.
+- Ruling (round): one design-review round (plan-next step 2); revision 2 is followed by the controller's self-review (step 3) and the 3a audit, not a second reviewer dispatch - cost if wrong: a defect the plan review (step 4, opus reviewer) catches instead.
+- Ruling (self-review, step 3, 2026-09-18 14:13 CT): two inline corrections by the controller - (1) the secret is placed by the user directly in the Omarchy runtime's `secrets/` like `anthropic_api_key` (`docs/runbooks/research.md`; `scripts/release-omarchy.py` copies no secret), so the Makefile's retired NAS scp loop is not edited and `Makefile` leaves T1's `Files:` (§4.7, §7 item 7, §7 item 12, §9 T1, §1.1b); (2) §1.6(a)'s prose now says B replaces the allowance, matching its own code block and the regime table - why: the addendum must describe the host that exists - cost if wrong: none.
