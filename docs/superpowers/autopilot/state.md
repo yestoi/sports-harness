@@ -1,6 +1,6 @@
 # Autopilot checkpoint
 
-Updated 2026-09-18 09:12 CT (14:12 UTC) by controller session sports-ed in `/home/trey/dev/sports` on Omarchy. Last journal entry: 281. Paper-only. Runtime build: **4066197** (journal 273, app-only 07:23 CT Sep 18, fix 79 print cache; 747791c full 10:04 CT Sep 16; app-ws on 747791c). Main is ahead of the runtime by fix 85 (migration 0014, 82401bd): held for Monday's quiet-window full release by the user's ruling, not a deploy trigger today. Rollback: app-only redeploy of 1a12781.
+Updated 2026-09-18 09:04 CT (14:04 UTC) by controller session sports-ed in `/home/trey/dev/sports` on Omarchy. Last journal entry: 281. Paper-only. Runtime build: **4066197** (journal 273, app-only 07:23 CT Sep 18, fix 79 print cache; 747791c full 10:04 CT Sep 16; app-ws on 747791c). Main is ahead of the runtime by fix 85 (migration 0014, 82401bd): held for Monday's quiet-window full release by the user's ruling, not a deploy trigger today. Rollback: app-only redeploy of 1a12781.
 
 ## Right now
 

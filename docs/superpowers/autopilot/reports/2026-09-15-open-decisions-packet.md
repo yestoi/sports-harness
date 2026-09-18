@@ -164,7 +164,7 @@ At 18:20 CT the loop that carried the NCAAF cohort (1,116 rows expiring) ran 125
 
 `player_stat_events` is written only for carded players of placed or alive cards, and no card exists, so tonight is not a "watched NFL window" in the plan's sense: the T18b measurement and T19's rows wait for your first card. The plan's cadence query is not valid SQL as written (WINDOW before WHERE and an aggregate over a window function); the corrected form is in `evidence/2026-09-17-window-1830.txt` for T19.
 
-## Added Fri 2026-09-18 09:15 CT (your two Friday ruling files, journal 272 and 278; outcomes in 274-281)
+## Added Fri 2026-09-18 09:05 CT (your two Friday ruling files, journal 272 and 278; outcomes in 274-281)
 
 ### 1, 19-23. Where each ruling stands
 

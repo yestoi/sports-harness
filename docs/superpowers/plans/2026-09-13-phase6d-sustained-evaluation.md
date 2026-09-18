@@ -6231,7 +6231,7 @@ applies each accepted finding; one line each.
 - **Open question 6 (test placement)** - accepted as written; no new test module.
 
 
-# Rulings on the Task 11 plan review (results/6d-task-11-plan-review.md, opus, one round: CHANGES REQUIRED 0 critical / 5 important / 15 minor) - controller sports-ed, 2026-09-18 09:05 CT
+# Rulings on the Task 11 plan review (results/6d-task-11-plan-review.md, opus, one round: CHANGES REQUIRED 0 critical / 5 important / 15 minor) - controller sports-ed, 2026-09-18 09:02 CT (commit clock; an earlier "09:05" was an estimate)
 - **Important 1 (`pipeline.py:75,79,91` wrong; copied into the `MarketFacts` docstring)** - Ruling: applied in both places: `75,77` for `sport`/`market_type`, and `ttk_minutes` named as the same formula (`gaps.py:220`, now `ttk_minutes_at`) that wrote the `snap.ttk_minutes` line 91 copies - a sonnet implementer follows cited lines literally - cost if wrong: a docstring that misdescribes its own fields.
 - **Important 2 (derived build is 528-530, not 545-547)** - Ruling: applied; the review brief's copy of the wrong range is superseded by this plan text - cost if wrong: the implementer edits a comment.
 - **Important 3 ("no column gains a value" overstated)** - Ruling: applied as the reviewer's split: no cell column gains a value (`classify_market` cited), cell combinations in `coverage_samples` can be new and are expected, `draw` is fixture-only - cost if wrong: the first verify reads a new triple as a defect.
