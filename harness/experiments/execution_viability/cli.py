@@ -8,7 +8,6 @@ from sqlalchemy import text
 
 from harness.config.settings import get_settings
 from harness.execution.book import newest_ws_connect
-from harness.execution.store import first_gap_ts
 from harness.experiments.execution_viability import EXP_DB_ROLE, EXP_LABEL
 from harness.experiments.execution_viability import bookhealth, source, storage
 from harness.logging_setup import configure_logging
@@ -42,7 +41,7 @@ def isolation_check() -> None:
 
 
 #: One aggregate per interval over `orderbook_events`, bounded by `ticker = :t and ts >= :start
-#: and ts < :end` inside the week's partition - the `(ticker, ts)` shape §1.3(a) names.
+#: and ts < :end` inside the week's partition, riding `ix_obe_ticker_ts (ticker, ts)`.
 _INTERVAL_TAPE = text(
     "select count(*) filter (where kind = 'delta') as deltas, "
     "count(*) filter (where kind = 'snapshot') as snapshots, "
@@ -62,6 +61,22 @@ _NEWEST_SNAPSHOT_IN = text(
     "where ticker = :t and kind = 'snapshot' and ts >= :start and ts < :end "
     "order by ts desc, id desc limit 1")
 
+#: The first gap **inside this interval** on the subscription the interval is judged on (review
+#: fix D5). `store.first_gap_ts` answers a different question - the first gap since the *anchor* -
+#: which is the same instant for every interval after the one it happened in, so a second gap on
+#: an un-reanchored subscription would never be returned at all and a quiet stretch during a real
+#: recorder outage would read as `inactive_confirmed`. Bounded by the interval, pruned to the
+#: week's partition and served by the partial index `ix_obe_gap (sid, id) where kind = 'gap'`.
+#:
+#: There is deliberately no `ticker` predicate: **every** gap row the recorder writes carries
+#: `ticker = ''` (`harness/recorder/ws_sink.py` writes both the seq-gap row and the sink-exception
+#: row that way, and `store.first_gap_ts`'s own docstring says so), because a gap is per
+#: subscription and dirties every ticker on it (§0.12). A `ticker = :t` bound would match no gap
+#: row in production at all.
+_FIRST_GAP_IN = text(
+    "select min(ts) from orderbook_events "
+    "where kind = 'gap' and sid = :sid and ts >= :start and ts < :end")
+
 #: The interval's public prints, on `ix_trades_ticker_ts`: §1.7's fourth fixture turns on them.
 _PRINTS_IN = text(
     "select count(*) from venue_trades where ticker = :t and ts >= :start and ts < :end")
@@ -72,7 +87,9 @@ def _observe_intervals(session, ticker: str, since: datetime, until: datetime,
     """One `HealthInput` per interval, every read bounded by that interval.
 
     The anchor is read once, before the loop, and carried forward: it can only change where a
-    snapshot row landed, which the interval's own aggregate already counts.
+    snapshot row landed, which the interval's own aggregate already counts. The gap question is
+    asked of the interval itself rather than of the anchor, so the second gap on one subscription
+    is as visible as the first (review fix D5).
     """
     anchor = session.execute(_ANCHOR_AT, {"t": ticker, "instant": since}).first()
     # No WebSocket snapshot at or before `since` means there is no sequence to continue: the
@@ -85,11 +102,11 @@ def _observe_intervals(session, ticker: str, since: datetime, until: datetime,
     start = since
     while start < until:
         end = min(start + step, until)
-        bounds = {"t": ticker, "start": start, "end": end}
+        bounds = {"t": ticker, "sid": sid, "start": start, "end": end}
         tape = session.execute(_INTERVAL_TAPE, bounds).one()
         prints = session.execute(_PRINTS_IN, bounds).scalar() or 0
-        # A gap is per subscription (`store.first_gap_ts`), so a REST anchor has none to ask about.
-        gap_ts = first_gap_ts(session, sid, anchor_id, at=end) if sid else None
+        # A gap is per subscription, so a REST anchor (sid 0) has no subscription to ask about.
+        gap_ts = session.execute(_FIRST_GAP_IN, bounds).scalar() if sid else None
         reanchored = bool(tape.snapshots)
         # A re-anchor restarts the sequence, so no advance across that boundary is comparable;
         # the interval is unresolved on continuity grounds and carries no invented advance.
@@ -125,6 +142,8 @@ def book_health(ticker: str = typer.Option(..., "--ticker"),
         raise typer.BadParameter("--interval-s must be a positive number of seconds")
     if persist and not run_id:
         raise typer.BadParameter("--persist needs --run-id: every exp_book_health row carries it")
+    # §0.6: every `harness exp` command says whose numbers these are before it prints any.
+    print(EXP_LABEL)
     s = get_settings()
     # The sample frame is re-derivable from the command's own arguments (§1.7c).
     seed = int(since.timestamp())

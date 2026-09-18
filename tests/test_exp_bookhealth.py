@@ -1,5 +1,9 @@
 """§1.7: was the book quiet, or did we lose the feed?"""
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import text
+from typer.testing import CliRunner
 
 from harness.experiments.execution_viability.bookhealth import (
     BOOK_VERIFY_MAX, CAVEATS, CLASSIFICATIONS, HealthInput, classify, persist, sample_intervals,
@@ -143,3 +147,69 @@ def test_the_interval_reads_are_valid_sql_and_answer_an_empty_tape(db_session):
                and o.prints_in_interval == 0 and o.first_gap_ts is None for o in observed)
     assert summarize([classify(o) for o in observed]) == {
         "inactive_confirmed": 0, "data_loss_confirmed": 0, "unresolved": 2}
+
+
+def _tape_row(session, *, ticker: str, ts: datetime, sid: int, seq: int, kind: str) -> None:
+    session.execute(text(
+        "insert into orderbook_events (ticker, ts, sid, seq, kind, raw) "
+        "values (:t, :ts, :sid, :seq, :kind, '{}'::jsonb)"),
+        {"t": ticker, "ts": ts, "sid": sid, "seq": seq, "kind": kind})
+
+
+def test_a_second_gap_on_the_same_subscription_is_still_confirmed_data_loss(db_session):
+    """Review fix D5: the gap question is asked of the interval, not of the anchor.
+
+    One WebSocket anchor before `since` and no re-anchor, so `sid`/`anchor_id` are the same for
+    all three intervals. `store.first_gap_ts(session, sid, anchor_id, at=end)` would answer with
+    the *first* gap since that anchor every time, and the second gap - a real recorder outage in a
+    stretch quiet enough to skip no sequence numbers - would read as `inactive_confirmed`.
+
+    The gap rows carry `ticker = ''` because that is what the recorder writes
+    (`harness/recorder/ws_sink.py`): a gap is per subscription and dirties every ticker on it.
+    """
+    from harness.experiments.execution_viability.cli import _observe_intervals
+
+    ticker = "KXNFLGAME-26SEP20DETBAL-DET"
+    first_gap, second_gap = START + timedelta(minutes=2), START + timedelta(minutes=22)
+    _tape_row(db_session, ticker=ticker, ts=START - timedelta(minutes=5), sid=7, seq=400,
+              kind="snapshot")
+    _tape_row(db_session, ticker="", ts=first_gap, sid=7, seq=401, kind="gap")
+    _tape_row(db_session, ticker="", ts=second_gap, sid=7, seq=402, kind="gap")
+    db_session.commit()
+
+    observed = _observe_intervals(db_session, ticker, START, START + timedelta(minutes=30), 600)
+    assert [o.sid for o in observed] == [7, 7, 7]          # one anchor, never re-anchored
+    assert [o.reanchored for o in observed] == [False, False, False]
+    assert [o.first_gap_ts for o in observed] == [first_gap, None, second_gap]
+
+    rows = [classify(o) for o in observed]
+    assert rows[2].classification == "data_loss_confirmed"
+    assert rows[2].evidence["cause"] == "gap_row"
+    # The quiet interval between the two outages keeps its positive verdict, on its own evidence.
+    assert rows[1].classification == "inactive_confirmed"
+    assert rows[1].evidence["gap_inside_interval"] is False
+    assert summarize(rows) == {"inactive_confirmed": 1, "data_loss_confirmed": 2, "unresolved": 0}
+
+
+def test_the_command_prints_the_experiment_label_before_any_count(db_session, env_settings,
+                                                                  monkeypatch):
+    """§0.6: every `harness exp` command names whose numbers these are before it prints any."""
+    from harness.experiments.execution_viability import EXP_LABEL
+    from harness.experiments.execution_viability import cli as exp_cli
+
+    @contextmanager
+    def _reader(_settings, *, engine=None):
+        yield db_session                 # T1 owns the real reader, and tests it
+
+    monkeypatch.setattr(exp_cli, "get_settings", lambda: env_settings)
+    monkeypatch.setattr(exp_cli.source, "reader", _reader)
+    result = CliRunner().invoke(exp_cli.exp_app, [
+        "book-health", "--ticker", "KXNFLGAME-26SEP20DETBAL-DET",
+        "--since", "2026-09-16T12:00:00+0000", "--until", "2026-09-16T12:20:00+0000"])
+
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    assert lines[0] == EXP_LABEL
+    assert [name for name in CLASSIFICATIONS if any(name in line for line in lines)] == \
+           list(CLASSIFICATIONS)
+    assert sum(line.startswith("  caveat: ") for line in lines) == len(CAVEATS)
