@@ -1,0 +1,144 @@
+daily_line_at=2026-09-18T13:58:11Z (08:58 CT)
+== df
+/dev/mapper/root  952G  175G  773G  19% /srv/sports-harness
+== free -m
+               total        used        free      shared  buff/cache   available
+Mem:           31904       11913        2166        1505       21255       19991
+Swap:          63808        2318       61490
+== sql
+Output format is unaligned.
+Field separator is " ".
+SET
+?column? pg_size_pretty ?column?
+db_size 148 GB 159.0 GB decimal
+(1 row)
+?column? ts value
+db.size_gb sample 2026-09-13 04:02:29.762524-05 99.464200
+db.size_gb sample 2026-09-14 05:36:24.861016-05 121.878400
+db.size_gb sample 2026-09-15 04:06:16.646967-05 129.921900
+db.size_gb sample 2026-09-16 04:56:09.037257-05 132.366700
+db.size_gb sample 2026-09-17 04:02:12.224926-05 134.562800
+db.size_gb sample 2026-09-18 04:03:58.971644-05 147.510900
+(6 rows)
+?column? value ts
+credits_now 4884405.000000 2026-09-18 08:55:57.754393-05
+(1 row)
+?column? value ts
+credits_24h_ago 4894255.000000 2026-09-17 08:57:42.224392-05
+(1 row)
+?column? age_s last_loop_ms p95_loop_ms loops_skipped loops open_orders coalesce executor_version last_loop_at
+exec_heartbeat 44 16631 21576 5651 47663 0 null 4.5 2026-09-18 08:57:27.913256-05
+(1 row)
+?column? count round round round
+exec_loop_ms_last_hour 48 16460 33572 46886
+(1 row)
+?column? tape walk batch per_row delta_rows full_reads
+exec_phase_last_hour 11586 1641 468 794 637653 3
+(1 row)
+?column? id started_at status build_sha
+last_run 25717 2026-09-18 08:57:57.754442-05 running 4066197
+(1 row)
+?column? id started_at finished_at status budget_exhausted
+settle_last 276 2026-09-18 08:22:27.781282-05 2026-09-18 08:23:17.229504-05 ok f
+settle_last 275 2026-09-18 07:03:58.971876-05 2026-09-18 07:04:25.14774-05 ok f
+(2 rows)
+?column? string_agg
+operator_events_24h ws_connect x8, ws_disconnect x16, check_failed x1, deploy x2
+(1 row)
+?column? count
+live_games 0
+(1 row)
+?column? string_agg
+next_kickoffs Fri 18:30 ncaaf, Fri 19:00 ncaaf, Fri 21:30 ncaaf, Sat 10:30 ncaaf, Sat 11:00 ncaaf, Sat 11:00 ncaaf
+(1 row)
+?column? day sum sum sum
+spend_today_ct 2026-09-18 24.5576 0.0000 414
+(1 row)
+?column? ?column? sum sum
+spend_by_kind_model_today veto/claude-opus-5 15.1428 207
+spend_by_kind_model_today veto/claude-sonnet-5 9.4148 207
+(2 rows)
+?column? sum
+spend_yesterday 24.3994
+(1 row)
+?column? sum min max
+spend_iso_week 122.2595 2026-09-14 2026-09-18
+(1 row)
+?column? kind count sum
+notes_today_by_kind veto 414 24.557048
+(1 row)
+ERROR:  column "check_results.status" must appear in the GROUP BY clause or be used in an aggregate function
+LINE 1: select 'check_fail_25h', check_name, status, max(ts) from ch...
+                                             ^
+== research worker refusals today (BudgetRefused / refused lines; item 19 point 3)
+{"asctime": "2026-09-18 13:57:48,037", "levelname": "WARNING", "name": "harness.research.veto", "message": "veto skipped on budget: daily cap: 24.5576 + 0.623360 would exceed 25"}
+{"asctime": "2026-09-18 13:57:48,042", "levelname": "WARNING", "name": "harness.research.veto", "message": "veto skipped on budget: daily cap: 24.5576 + 0.623360 would exceed 25"}
+{"asctime": "2026-09-18 13:57:48,047", "levelname": "WARNING", "name": "harness.research.veto", "message": "veto skipped on budget: daily cap: 24.5576 + 0.623360 would exceed 25"}
+{"asctime": "2026-09-18 13:57:48,051", "levelname": "WARNING", "name": "harness.research.veto", "message": "veto skipped on budget: daily cap: 24.5576 + 0.623360 would exceed 25"}
+{"asctime": "2026-09-18 13:57:48,056", "levelname": "WARNING", "name": "harness.research.veto", "message": "veto skipped on budget: daily cap: 24.5576 + 0.623360 would exceed 25"}
+{"asctime": "2026-09-18 13:57:48,061", "levelname": "WARNING", "name": "harness.research.veto", "message": "veto skipped on budget: daily cap: 24.5576 + 0.623360 would exceed 25"}
+{"asctime": "2026-09-18 13:57:48,066", "levelname": "WARNING", "name": "harness.research.veto", "message": "veto skipped on budget: daily cap: 24.5576 + 0.623360 would exceed 25"}
+{"asctime": "2026-09-18 13:57:48,070", "levelname": "WARNING", "name": "harness.research.veto", "message": "veto skipped on budget: daily cap: 24.5576 + 0.623360 would exceed 25"}
+{"asctime": "2026-09-18 13:57:48,075", "levelname": "WARNING", "name": "harness.research.veto", "message": "veto skipped on budget: daily cap: 24.5576 + 0.623360 would exceed 25"}
+{"asctime": "2026-09-18 13:57:48,080", "levelname": "WARNING", "name": "harness.research.veto", "message": "veto skipped on budget: daily cap: 24.5576 + 0.623360 would exceed 25"}
+{"asctime": "2026-09-18 13:57:48,085", "levelname": "WARNING", "name": "harness.research.veto", "message": "veto skipped on budget: daily cap: 24.5576 + 0.623360 would exceed 25"}
+{"asctime": "2026-09-18 13:57:48,087", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 12}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_o
+== ERROR lines last hour per service (messages)
+-- app-run
+-- app-serve
+-- app-ws
+-- app-exec
+-- app-research
+== kill switch
+{'active': False, 'reason': '', 'set_at': None}
+== row 83 swap read (vmstat 5 3; container RSS)
+procs -----------memory---------- ---swap-- -----io---- -system-- -------cpu-------
+ r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st gu
+ 4  0 2374172 2051644   28 21903740  9   19  1746 12134 4793    5  5  1 94  1  0  0
+ 0  0 2374172 2089280   28 21905720  0    0     3 15939 5676 15312 6  1 93  0  0  0
+ 1  0 2374156 2073740   28 21907616  3    0     3  1229 5201 10205 6  1 93  0  0  0
+NAME                            MEM USAGE / LIMIT     CPU %
+sports-harness-app-run-1        170.8MiB / 31.16GiB   27.25%
+sports-harness-app-serve-1      153.3MiB / 31.16GiB   0.06%
+sports-harness-app-research-1   91.58MiB / 31.16GiB   0.00%
+sports-harness-app-exec-1       3.774GiB / 31.16GiB   0.00%
+sports-harness-app-ws-1         76.62MiB / 31.16GiB   1.28%
+sports-harness-app-backup-1     584KiB / 31.16GiB     0.00%
+sports-harness-postgres-1       964.9MiB / 31.16GiB   2.94%
+== deferred rows (journal 275): pricing_order/variant_ms and 6D stage costs, read after the 08:10 CT pricing run
+Output format is unaligned.
+k|id|started_at|status|pricing_order|variant_ms
+pricing_order|25717|2026-09-18 13:57:57.754442+00|ok||
+pricing_order|25714|2026-09-18 13:55:57.754393+00|ok||
+pricing_order|25709|2026-09-18 13:53:27.75443+00|ok||
+(3 rows)
+k|id|left
+6d_stage_costs|25717|{}
+(1 row)
+k|count|min|max
+runs_today_nonskipped|214|2026-09-18 01:59:58.971109+00|2026-09-18 13:57:57.754442+00
+(1 row)
+== continued 2026-09-18T13:59:11Z: priced ticks run every ~15 min and carry the pricing block; the 2-min ticks in between carry pricing {} (deferred rows read on the priced ticks)
+Output format is unaligned.
+k|count|min|max
+priced_ticks_since_0810|4|2026-09-18 08:00:27.754358|2026-09-18 08:46:27.754394
+(1 row)
+k|id|ct|pricing_order|variant_ms|gvm|budget_s|capped|exhausted
+pricing_order|25698|2026-09-18 08:46:27.754394|["sharp_two_sided", "sharp_direct", "sharp_plus_derived", "wide_band", "constrained", "nfl_only", "no_velocity"]|{"nfl_only": 257, "wide_band": 209, "constrained": 255, "no_velocity": 263, "sharp_direct": 281, "sharp_two_sided": 549, "sharp_plus_derived": 2492}|false|45|false|false
+pricing_order|25669|2026-09-18 08:30:57.754468|["sharp_two_sided", "sharp_direct", "wide_band", "constrained", "nfl_only", "no_velocity", "sharp_plus_derived"]|{"nfl_only": 229, "wide_band": 234, "constrained": 177, "no_velocity": 310, "sharp_direct": 233, "sharp_two_sided": 439, "sharp_plus_derived": 2304}|false|45|false|false
+pricing_order|25645|2026-09-18 08:15:57.754378|["sharp_two_sided", "sharp_direct", "constrained", "nfl_only", "no_velocity", "sharp_plus_derived", "wide_band"]|{"nfl_only": 91, "wide_band": 96, "constrained": 166, "no_velocity": 65, "sharp_direct": 78, "sharp_two_sided": 188, "sharp_plus_derived": 2670}|false|45|false|false
+(3 rows)
+k|id|stage|status|cause|units|elapsed_ms|remaining_ms
+6d_stage_costs|25698|fair_direct|ran||486|1786|45000
+6d_stage_costs|25698|gaps_direct|ran||486|1625|43213
+6d_stage_costs|25698|variants_direct|ran||2916|1905|41587
+6d_stage_costs|25698|fair_derived|ran||2720|3591|39682
+6d_stage_costs|25698|gaps_derived|ran||3692|5035|36090
+6d_stage_costs|25698|variants_derived|ran||4178|2756|31054
+(6 rows)
+k|count
+gate_variant_missing_24h|0
+(1 row)
+k|exhausted|priced
+budget_exhausted_share_24h|1|305
+(1 row)
