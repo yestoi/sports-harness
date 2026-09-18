@@ -89,16 +89,34 @@ def test_the_granted_role_opens_and_the_server_refuses_its_write(db_session, exp
 
 
 def test_the_source_capability_cannot_write(db_session, exp_settings):
-    # Defence in depth: even were the probe bypassed, the session is read-only.
-    session = db_session
-    session.execute(text("set default_transaction_read_only = on"))
-    session.commit()
-    with pytest.raises(Exception) as err:
-        session.execute(text("insert into exp_probe_should_not_exist values (1)"))
-    session.rollback()
-    session.execute(text("set default_transaction_read_only = off"))
-    session.commit()
-    assert "read-only" in str(err.value).lower() or "does not exist" in str(err.value).lower()
+    """Defence in depth (§1.1b): under `default_transaction_read_only = on` - the GUC
+    `source.reader()` sets - an INSERT into a production table is refused by PostgreSQL.
+
+    The statement names `source_state`, a real and normally writable table whose two required
+    columns make a one-line valid INSERT, so the *only* thing that can refuse it is the GUC. A
+    probe against a table no schema declares would raise `UndefinedTable` with the GUC off too
+    and would prove nothing (controller ruling D3).
+
+    The work runs on one held `Connection` rather than on `db_session`: the suite's `checkin`
+    listener issues `reset all` whenever a connection returns to the pool, and a `Session` returns
+    its connection at every commit, so a session-level `SET` cannot outlive a commit *in the test
+    harness*. One checkout keeps the setting where the reader has it - on the connection the next
+    transaction runs on. The GUC is reset and the transaction rolled back before the connection is
+    released, so the shared `db_session` and the pool are left as they were.
+    """
+    with db_session.get_bind().connect() as conn:
+        conn.execute(text("set default_transaction_read_only = on"))
+        conn.commit()
+        assert conn.execute(text("show transaction_read_only")).scalar() == "on"
+        with pytest.raises(Exception) as err:
+            conn.execute(text(
+                "insert into source_state (key, last_fetched_at) "
+                "values ('exp_readonly_probe', now())"))
+        conn.rollback()
+        conn.execute(text("set default_transaction_read_only = off"))
+        conn.commit()
+    # `cannot execute INSERT in a read-only transaction`, and no other branch.
+    assert "read-only" in str(err.value).lower()
 
 
 def test_the_writer_refuses_every_production_table(db_session, exp_settings):
