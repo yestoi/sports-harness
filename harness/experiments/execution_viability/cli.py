@@ -10,8 +10,8 @@ from sqlalchemy import text
 from harness.config.settings import get_settings
 from harness.execution.book import newest_ws_connect
 from harness.experiments.execution_viability import EXP_DB_ROLE, EXP_LABEL
-from harness.experiments.execution_viability import (bookhealth, source, storage,
-                                                     veto_profile)
+from harness.experiments.execution_viability import (adapter, baseline, bookhealth, capture,
+                                                     source, storage, veto_profile)
 from harness.logging_setup import configure_logging
 from harness.research import pacing
 
@@ -232,3 +232,104 @@ def veto_profile_cmd(
             weekly_cap=s.veto_weekly_usd_cap)
     print(veto_profile.render_preflight(report))
     print(veto_profile.amendment_record(profile, prepared_at=now))
+
+
+def _tickers(raw: str) -> list[str]:
+    out = [t.strip() for t in raw.split(",") if t.strip()]
+    if not out:
+        raise typer.BadParameter("--tickers takes a comma-separated list of venue tickers")
+    return out
+
+
+def _clock(session, *, since: datetime, until: datetime, variant_ids: list[str]):
+    """The resolved clock and the number printed beside it (§1.3d, C1)."""
+    instants = capture.resolve_instants(session, warmup_start=since, observation_end=until,
+                                        variant_ids=variant_ids)
+    samples, p50_ms = capture.loop_sample_stats(session, warmup_start=since,
+                                                observation_end=until)
+    span_s = (until - since).total_seconds()
+    estimate = (capture.live_loop_estimate(samples, span_s, p50_ms)
+                if samples and p50_ms > 0 else 0)
+    return instants, samples, estimate
+
+
+@exp_app.command("capture")
+def capture_cmd(run_id: str = typer.Option(..., "--run-id"),
+                since: datetime = typer.Option(..., "--since",
+                                               formats=["%Y-%m-%dT%H:%M:%S%z"]),
+                until: datetime = typer.Option(..., "--until",
+                                               formats=["%Y-%m-%dT%H:%M:%S%z"]),
+                tickers: str = typer.Option(..., "--tickers"),
+                variants: str = typer.Option("", "--variants")) -> None:
+    """Write one slice of the tape to the hashed NDJSON tree (§1.3a) and print each file's
+    sha256. Reads through the read-only reader, so it fails closed without the grant."""
+    configure_logging()
+    if until <= since:
+        raise typer.BadParameter("--until must be after --since")
+    ticker_list = _tickers(tickers)
+    # §0.6: every `harness exp` command says whose numbers these are before it prints any.
+    print(EXP_LABEL)
+    s = get_settings()
+    with source.reader(s) as session:
+        variant_ids = [v.strip() for v in variants.split(",") if v.strip()]
+        instants, samples, estimate = _clock(session, since=since, until=until,
+                                             variant_ids=variant_ids)
+        hashes, limitations = capture.capture_slice(
+            s, session, run_id=run_id, warmup_start=since, observation_end=until,
+            tickers=ticker_list, variant_ids=variant_ids)
+    spacing = capture.spacing_limitation(run_id, warmup_start=since, observation_end=until,
+                                         instants=len(instants), live_estimate=estimate,
+                                         now=datetime.now(timezone.utc))
+    print(f"run={run_id} tickers={len(ticker_list)} dir={storage.run_dir(s, run_id)}")
+    # C1: the resolved instant count is printed beside the live loop estimate, always, so the
+    # thinned opportunity clock cannot be read as the live one.
+    print(f"  retained action instants   {len(instants)}")
+    print(f"  live loop estimate         {estimate} (from {samples} exec.loop_ms samples)")
+    for stream in capture.CAPTURE_STREAMS:
+        print(f"  {stream:<14} sha256={hashes[stream]}")
+    for limitation in [spacing, *limitations[1:]]:
+        print(f"  limitation      {limitation.kind}")
+
+
+@exp_app.command("baseline-check")
+def baseline_check(run_id: str = typer.Option(..., "--run-id"),
+                   since: datetime = typer.Option(..., "--since",
+                                                  formats=["%Y-%m-%dT%H:%M:%S%z"]),
+                   until: datetime = typer.Option(..., "--until",
+                                                  formats=["%Y-%m-%dT%H:%M:%S%z"]),
+                   variants: str = typer.Option(..., "--variants")) -> None:
+    """Compare arm A against the recorded slice at the retained action instants (§1.3f).
+
+    Writes nothing: it steps the shared functions through the read-only reader and prints the
+    comparison. Missing input history reads `incomplete/unverifiable`, never as a pass.
+    """
+    configure_logging()
+    if until <= since:
+        raise typer.BadParameter("--until must be after --since")
+    variant_ids = [v.strip() for v in variants.split(",") if v.strip()]
+    if not variant_ids:
+        raise typer.BadParameter("--variants takes a comma-separated list of variant ids")
+    # §0.6: the label first, after the arguments are validated and before any number.
+    print(EXP_LABEL)
+    s = get_settings()
+    with source.reader(s) as session:
+        instants, _samples, estimate = _clock(session, since=since, until=until,
+                                              variant_ids=variant_ids)
+        # Function scope, like `storage.load_exp_metadata`: this package imports no executor
+        # module at import time, and `tests/test_exp_isolation.py` asserts that shape.
+        from harness.execution.plan import ExecSettings
+        from harness.execution.store import variant_configs
+
+        runner = adapter.ArmRunner(run_id=run_id, arm_id="A", policy=None,
+                                   variant_cfg=variant_configs(session, variant_ids),
+                                   exec_settings=ExecSettings.from_settings(s), walkers={})
+        produced = [action for result in runner.run(session, list(instants))
+                    for action in result.actions]
+        recorded = baseline.recorded_actions(session, warmup_start=since, observation_end=until,
+                                             variant_ids=variant_ids)
+    mismatches = baseline.compare_actions(recorded, produced, run_id=run_id, arm_id="A")
+    spacing = capture.spacing_limitation(run_id, warmup_start=since, observation_end=until,
+                                         instants=len(instants), live_estimate=estimate,
+                                         now=datetime.now(timezone.utc))
+    print(baseline.render_baseline(mismatches, instants=len(instants), live_estimate=estimate,
+                                   limitations=[spacing]))
