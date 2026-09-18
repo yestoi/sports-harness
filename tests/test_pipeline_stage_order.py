@@ -23,7 +23,7 @@ from pathlib import Path
 from sqlalchemy import text as sa_text
 
 from harness.db.models import (CoverageSample, FairValue, Game, MarketGapSnapshot, OddsSnapshot,
-                              Run, Signal, VenueMarket, VenueQuote)
+                               Run, Signal, VenueMarket, VenueQuote)
 from harness.matching.teams import seed_teams_from_espn
 from harness.pricing.fair import compute_fair_values
 from harness.pricing.gaps import build_gap_snapshots
@@ -189,6 +189,21 @@ def _coverage_counts(session, run_id):
     for row in session.query(CoverageSample).filter_by(run_id=run_id, domain="evaluation"):
         out.setdefault(row.variant_id, {})
         out[row.variant_id][row.outcome] = out[row.variant_id].get(row.outcome, 0) + row.n
+    return out
+
+
+def _coverage_counts_by_market_type(session, run_id, variant_id):
+    """{market_type: {outcome: n}} for one variant's `evaluation`-domain rows. Review M1: the
+    aggregate `_coverage_counts` above cannot tell a market this run never gapped (`no_gap`,
+    class `data`) apart from one it gapped but a direct-only variant never got to see (the
+    derived phase's rows, `no_signal`, class `instrument`) once both land in the same cell --
+    this file's fixture puts every spread (or total) threshold in one cell regardless of which
+    of them the margin model alone gapped, so the split has to be read off `market_type`."""
+    out: dict[str, dict[str, int]] = {}
+    for row in session.query(CoverageSample).filter_by(
+            run_id=run_id, domain="evaluation", variant_id=variant_id):
+        out.setdefault(row.market_type, {})
+        out[row.market_type][row.outcome] = out[row.market_type].get(row.outcome, 0) + row.n
     return out
 
 
@@ -361,19 +376,20 @@ _DIRECT_ONLY_NAMES = {"sharp_direct", "sharp_two_sided", "constrained", "nfl_onl
 
 
 @pytest.mark.parametrize(
-    "budget_s, expected_status, expected_scored",
+    "budget_s, expected_status, expected_scored, expected_gapped_but_unscored_outcome",
     [
         pytest.param(5, ["ran", "ran", "ran", "skipped", "skipped", "skipped"],
-                     {"sharp_direct"}, id="mid_variants_direct_loop"),
+                     {"sharp_direct"}, "no_gap", id="mid_variants_direct_loop"),
         pytest.param(20, ["ran", "ran", "ran", "skipped", "skipped", "skipped"],
-                     _DIRECT_ONLY_NAMES, id="right_after_variants_direct"),
+                     _DIRECT_ONLY_NAMES, "no_gap", id="right_after_variants_direct"),
         pytest.param(22, ["ran", "ran", "ran", "ran", "skipped", "skipped"],
-                     _DIRECT_ONLY_NAMES, id="after_fair_derived"),
+                     _DIRECT_ONLY_NAMES, "no_gap", id="after_fair_derived"),
         pytest.param(23, ["ran", "ran", "ran", "ran", "ran", "skipped"],
-                     _DIRECT_ONLY_NAMES, id="after_gaps_derived"),
+                     _DIRECT_ONLY_NAMES, "no_signal", id="after_gaps_derived"),
     ])
 def test_an_exhausted_tick_closes_every_scheduled_cell_it_leaves_behind(
-        env_settings, db_session, monkeypatch, budget_s, expected_status, expected_scored):
+        env_settings, db_session, monkeypatch, budget_s, expected_status, expected_scored,
+        expected_gapped_but_unscored_outcome):
     """Fix 87 (fixes.md row 87, journal 275). The scheduled rows are written and committed
     right after the direct gap build; four early `return finish()` exits between that write and
     the end of stage 6 used to leave their still-scheduled cells open forever. Each `budget_s`
@@ -390,6 +406,15 @@ def test_an_exhausted_tick_closes_every_scheduled_cell_it_leaves_behind(
     `22` and `23` each let the whole loop finish (all six direct-only variants scored) and then
     trip after `variants_direct`, after `fair_derived` and after `gaps_derived` respectively --
     `sharp_plus_derived`, the only derived consumer, is scored in none of them.
+
+    Review M1: the seeded shape has one spread threshold (HOME 9.5, matching `_tie_inputs`'s
+    "derived" market) and one total threshold with no direct fair value, each priced only by
+    the margin model in `fair_derived` and gapped only by `gaps_derived` -- so a direct-only
+    scored variant never gets to see either row. Before `gaps_derived` runs (`budget_s` 5, 20,
+    22) that market genuinely has no gap row this run and `no_gap` (class `data`) is the true
+    label; at `budget_s=23`, `gaps_derived` has already written its gap row and the same variant
+    now simply never addressed it, so the true label is `no_signal` (class `instrument`) -- a
+    fixed `gapped` set has to flip exactly this one outcome at exactly this one exit.
     """
     game, markets = _seed(db_session)
     register_variants(db_session, load_variants(PROD_VARIANTS), NOW, prune=True)
@@ -405,6 +430,13 @@ def test_an_exhausted_tick_closes_every_scheduled_cell_it_leaves_behind(
     by_name = {s["name"]: s for s in result["stages"]}
     assert [by_name[n]["status"] for n in STAGE_NAMES] == expected_status
     assert set(result["variants_run"]) == expected_scored
+    # Review m1: exit 1 and exit 2 share the same stage-status signature and are today pinned
+    # apart only by the size of `expected_scored` (exit 1 can never finish the loop with every
+    # direct-only variant scored). `cause` pins the case directly: `variants_direct` closes with
+    # `cause="budget"` only when the deadline stopped it mid-loop (exit 1), and `cause=None` when
+    # the loop ran to completion (exits 2-4).
+    assert by_name["variants_direct"]["cause"] == (
+        "budget" if len(expected_scored) < 6 else None)
 
     all_variants = {v.name: v for v in active_variants(db_session)}
     unscored = set(all_variants) - expected_scored
@@ -421,6 +453,17 @@ def test_an_exhausted_tick_closes_every_scheduled_cell_it_leaves_behind(
             assert set(counts[vid]) - {"scheduled"} == {"budget_stage_skipped"}, name
         else:
             assert "budget_stage_skipped" not in counts.get(vid, {}), name
+
+    # Review M1. `sharp_direct` is scored in every case here; its `spread` and `total` cells
+    # each carry one unit for a threshold only the margin model ever gapped, and that unit's
+    # outcome is what the fix must flip at exactly the `after_gaps_derived` exit.
+    by_market_type = _coverage_counts_by_market_type(
+        db_session, run.id, all_variants["sharp_direct"].variant_id)
+    other_outcome = "no_signal" if expected_gapped_but_unscored_outcome == "no_gap" else "no_gap"
+    for market_type in ("spread", "total"):
+        assert by_market_type[market_type].get(expected_gapped_but_unscored_outcome, 0) == 1, (
+            market_type)
+        assert by_market_type[market_type].get(other_outcome, 0) == 0, market_type
 
     assert _unclosed_evaluation_cells(db_session) == []
 
@@ -708,3 +751,4 @@ def test_pipeline_refreshes_mixed_gate_labels_after_derived_competition(
     assert any(row["fair_source"] == "direct" and not row["labels"]["cap_per_game"]
                for row in expected.values())
     assert _signal_rows(db_session, new_run.id) == expected
+

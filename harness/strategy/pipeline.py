@@ -568,7 +568,13 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
         result["budget_exhausted"] = True
         stages.skip("variants_derived", cause="budget")
         record_order()
-        close_coverage({row.venue_market_id for row in direct_rows})
+        # Review M1: `gaps_derived` has just run and may have written gap rows of its own, so
+        # `direct_rows` alone would mislabel a scored variant's derived-gapped cells `no_gap`
+        # (class `data`, "the data was not there") when the truth is `no_signal` (class
+        # `instrument`, "the instrument ran and recorded nothing") -- stage 6's own `all_rows`
+        # expression, reused here so the two can never diverge.
+        close_coverage({row.venue_market_id for row in
+                        (_load_gap_rows(session, run_id, market_order) if new_gaps else direct_rows)})
         return finish()
 
     # Stage 6 scores the derived consumers over the complete row set. It no longer re-scores a
