@@ -3,7 +3,16 @@
     "sports_worker": {
       "type": "stdio",
       "command": "/usr/bin/python3",
-      "args": ["-I", "/home/trey/dev/sports/scripts/worker-tools.py"]
+      "args": [
+        "-I",
+        "/home/trey/dev/sports/scripts/worker-tools.py"
+      ]
+    },
+    "graft": {
+      "command": "graft",
+      "args": [
+        "mcp"
+      ]
     }
   }
 }
