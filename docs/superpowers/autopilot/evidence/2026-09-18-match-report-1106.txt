@@ -1,0 +1,25 @@
+match_report_at_utc=2026-09-18T16:06:33Z (11:06 CT) build 4066197; Friday alias pass (morning after Thursday's game), read-only
+ Container sports-harness-postgres-1 Running 
+ Container sports-harness-postgres-1 Waiting 
+ Container sports-harness-postgres-1 Healthy 
+ Container sports-harness-app-run-run-7ec5a1120509 Creating 
+ Container sports-harness-app-run-run-7ec5a1120509 Created 
+== nfl: venue markets 1629
+  matched      1629  100.0%
+  fuzzy           0    0.0%
+  manual          0    0.0%
+  unmatched       0    0.0%
+  games without ESPN link: 240
+== ncaaf: venue markets 9906
+  matched      7738   78.1%
+  fuzzy           0    0.0%
+  manual          0    0.0%
+  unmatched    2168   21.9%
+    2124  no game for pair                                              e.g. KXNCAAFGAME-26OCT01UNTTLSA-TLSA
+      39  unresolved: UT Rio Grande Valley                              e.g. KXNCAAFGAME-26SEP12UTRGVNICH-NICH
+       5  ambiguous: 2 games                                            e.g. KXNCAAFSPREAD-26SEP12CPSJSU-CP5
+  games without ESPN link: 20
+unresolved Odds API names (7d): none
+ambiguous aliases: 11 (first 10: ['ncaaf/espn_abbr_name/rsvt lakers', 'ncaaf/espn_abbr/osu', 'ncaaf/espn_abbr/rsvt', 'ncaaf/espn_display/roosevelt lakers', 'ncaaf/espn_location/charlotte', 'ncaaf/espn_location/roosevelt', 'ncaaf/espn_location/troy', 'ncaaf/espn_short/roosevelt', 'ncaaf/espn_slug/roosevelt lakers', 'nfl/espn_location/los angeles'])
+
+teams_rgv (11:09 CT): select from teams where name ilike %rio grande% or abbreviation ilike %RGV% -> 0 rows (no ESPN team row; journal 11 and results/fix-aliases-20260914-report.md)

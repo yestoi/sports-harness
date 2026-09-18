@@ -1,6 +1,6 @@
 # Autopilot checkpoint
 
-Updated 2026-09-18 11:06 CT (16:06 UTC) by controller session sports-ed in `/home/trey/dev/sports` on Omarchy. Last journal entry: 284. Paper-only. Runtime build: **4066197** (journal 273, app-only 07:23 CT Sep 18, fix 79 print cache; 747791c full 10:04 CT Sep 16; app-ws on 747791c). Main is ahead of the runtime by fix 85 (migration 0014, 4d2cdcc) and 6D Task 11 (0fe5890): **the release is gated (journal 284)**: app-only is refused by classification while fix 85's files sit on main; fix 85 is held for Monday's quiet-window full release by ruling 2026-09-18b §1; the user chooses (packet item 24). Rollback: app-only redeploy of 1a12781.
+Updated 2026-09-18 11:12 CT (16:12 UTC) by controller session sports-ed in `/home/trey/dev/sports` on Omarchy. Last journal entry: 285. Paper-only. Runtime build: **4066197** (journal 273, app-only 07:23 CT Sep 18, fix 79 print cache; 747791c full 10:04 CT Sep 16; app-ws on 747791c). Main is ahead of the runtime by fix 85 (migration 0014, 4d2cdcc) and 6D Task 11 (0fe5890): **the release is gated (journal 284)**: app-only is refused by classification while fix 85's files sit on main; fix 85 is held for Monday's quiet-window full release by ruling 2026-09-18b §1; the user chooses (packet item 24). Rollback: app-only redeploy of 1a12781.
 
 ## Right now
 
@@ -18,7 +18,7 @@ Updated 2026-09-18 11:06 CT (16:06 UTC) by controller session sports-ed in `/hom
 
 1. Fri 2026-09-18: row 87 hotfix (implement, review, suite, merge; no release); design-86 query 4 ~17:55 CT (+ the frozen-cursor query, journal 281); 18:25 CT after-window read (fills AFTER half with the 07:23 CT release instant, 6B §3, 6D rows, coverage waived, deferred rows scored; no row 2 granularity note: Task 11 not shipped). Release per the user's item 24 answer.
 2. Verify after each release: journal 219's deferred rows, item 12, item 16, rows 49/68, the 6B by-cause row, Watch reads (56, 70); Task 11's judge-after; `exec.phase_place_ms` per `exec.placed` after fix 85.
-3. Operate: storage retention proposal (`reports/2026-09-15-storage-retention-proposal.md`; the user decides by 2026-09-22). Alias pass rides Monday's full release. 6D acceptance rows and 4.6 T18b/T19 wait for game windows. Usage.py measurement is the user's (journal 247).
+3. Operate: storage retention proposal (`reports/2026-09-15-storage-retention-proposal.md`; the user decides by 2026-09-22). Friday alias pass done (journal 285): no alias candidate (UTRGV has no ESPN team row; the rest are schedule gaps); the next pass is Monday 09:30 CT. 6D acceptance rows and 4.6 T18b/T19 wait for game windows. Usage.py measurement is the user's (journal 247).
 
 ## Active units
 

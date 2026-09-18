@@ -3324,3 +3324,14 @@ User, verbatim (07:19 CT, in chat): "Read /home/trey/dev/sports/.superpowers/sdd
 - Result: gated: Task 11's release needs the user's choice between rulings §1 and §2.
 - Carried forward: none (row 87 unchanged; no row for a ruling conflict).
 - Next: hotfix row 87 (serial after Task 11), wakeup 17:55 CT (cron 934ed497) and 18:25 CT (cron f2b3647e); the release waits for the user.
+
+## 285. operate - Friday alias pass: no alias candidate (UTRGV has no ESPN team row) - 2026-09-18 11:06-11:12 CT
+
+- Orient: rule 4 - the calendar's "morning after a Thursday game" alias duty (journal 270's Next), run at the unit boundary after Task 11's merge and the release gate.
+- `harness match-report` on Omarchy 11:06 CT (evidence/2026-09-18-match-report-1106.txt): nfl 100 %; ncaaf 78.1 % matched, unmatched 2,168: `no game for pair` 2,124 (October fixtures ESPN's scoreboard does not carry yet, e.g. 26OCT01 UNT-TLSA; not aliases), `unresolved: UT Rio Grande Valley` 39 (no ESPN team row on the runtime: `teams` 0 rows for the name or abbreviation, the standing finding of journal 11 and Monday's report `results/fix-aliases-20260914-report.md`), `ambiguous: 2 games` 5 (CP/SJSU, one pair with two Game rows, not an alias problem, unchanged since Monday); unresolved Odds API names 7 d: none (Monday's two aliases ca30ed1 resolved them); ambiguous aliases 11 unchanged.
+- Rulings: (1) no implementer: an alias cannot resolve a team without a row, and nothing else is unmatched by name; (2) the ncaaf rate's fall from 85.2 % (Mon) to 78.1 % is the October market count growing ahead of ESPN's scoreboard window, not a regression: no row; (3) the CP/SJSU ambiguity stays an observation (five markets) until a schedule read shows which Game row is spurious: no row.
+- Anomalies: none. Instruction-like data: none.
+- Dispatches: 0; day 14.
+- Result: done (no change; nothing to ride the next release).
+- Carried forward: none.
+- Next: hotfix row 87 (implementer running, chase 12:34 CT); wakeups 17:55 CT and 18:25 CT.
