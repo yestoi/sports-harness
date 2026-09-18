@@ -1,0 +1,221 @@
+rows_at_utc=2026-09-18T12:43:28Z (07:43 CT) deploy 4066197; table-cell rows of the phase 4.5, 5, 6C and 6D blocks
+Output format is unaligned.
+== phase 4.5 rows
+k|v
+snapshot_disabled_25h|0
+(1 row)
+k|v
+pulse_status|BROKEN
+(1 row)
+k|v
+pulse_rules|[{"name": "check_fail", "unit": "count", "level": "broken", "value": 1, "threshold": 0}, {"name": "research_budget", "unit": "count", "level": "watch", "value": 24.5576, "threshold": 25.0}]
+(1 row)
+k|v
+pulse_not_evaluated|[{"name": "kill_switch", "unit": "count", "level": "not_evaluated", "value": null, "threshold": 0}]
+(1 row)
+k|v
+pulse_all|[{"name": "recorder_stale", "unit": "s", "level": "fine", "value": 0.171911, "threshold": 1200.0}, {"name": "heartbeat_watch", "unit": "s", "level": "fine", "value": 30.013164, "threshold": 60.0}, {"name": "heartbeat_broken", "unit": "s", "level": "fine", "value": 30.013164, "threshold": 120.0}, {"name": "ws_event_watch", "unit": "s", "level": "fine", "value": 29.479316, "threshold": 60.0}, {"name": "ws_event_broken", "unit": "s", "level": "fine", "value": 29.479316, "threshold": 120.0}, {"name": "tape_gap", "unit": "count", "level": "fine", "value": 0.0, "threshold": 0}, {"name": "kill_switch
+(1 row)
+k|count
+snapshots_future|0
+(1 row)
+k|count
+parlay_ledger_orphans|0
+(1 row)
+k|count
+parlay_leg_probs_range|0
+(1 row)
+k|percentile_disc
+floor_p95_ms_1h|186.000000
+(1 row)
+k|format
+snapshot_cpu_top_minute|2026-09-18 12:05:00+00 551.000000
+(1 row)
+k|count
+t12_hash_rows|0
+(1 row)
+== phase 5 rows
+k|format
+spend|2026-09-17 usd 24.3994 reserved 0.0000
+spend|2026-09-18 usd 24.5576 reserved 0.0000
+(2 rows)
+k|sum
+spend_week|122.2595
+(1 row)
+k|count
+veto_pairs_bad|0
+(1 row)
+k|format
+veto_vs_intents_24h|intents 73047 decisions 73047 cache 0.002
+(1 row)
+k|format
+decision_lag_s|p50 8153.352325 p95 10733.610048
+(1 row)
+k|format
+decisions_24h|veto_skipped_budget 72715
+decisions_24h|veto_error 45
+decisions_24h|proceed 287
+(3 rows)
+k|left
+pulse_research|{"day_usd": 24.5576, "dormant": true, "sentence": "Research spend today: $24.56 of $25.00, with $0.00 reserved. This week: $122.26 of $150.00. The worker is dormant until tomorrow.", "week_usd": 122.2595, "daily_cap": 25.0, "veto_rate": 0.0, "weekly_cap": 150.0, "decided_24h": 287, "day_reserved": 0.0, "veto_sentence": "The veto reduced or vetoed 0 % of 287 decided signals in 24 hours. Decisions a
+(1 row)
+k|count
+weather_reresolved_24h|0
+(1 row)
+k|format
+weather_fresh|89 games in 72h; snapshots<2h 0
+(1 row)
+k|format
+futures_weeks|2026-W38 217 22438
+(1 row)
+k|format
+rfqs_24h|0  
+(1 row)
+k|count
+rfq_quotes_branches|0
+(1 row)
+ERROR:  column "report_cells.table_key" must appear in the GROUP BY clause or be used in an aggregate function
+LINE 1: select 't7_t10' k, format('%s %s', table_key, count(*)) from...
+                                           ^
+== continued at 12:43:42Z (t7/t10 statement corrected: group by table_key)
+Output format is unaligned.
+k|format
+t7_t10|t10 42
+t7_t10|t7 7
+(2 rows)
+== 6C rows
+k|format
+6c_i_provisional_week|2026 38
+(1 row)
+k|name
+6c_ii_study_name|study:2026-38
+(1 row)
+k|format
+6c_iv_ticket_week|2026 38 budget_left 50.0
+(1 row)
+k|count
+6c_vii_week_key_invariant|0
+(1 row)
+k|format
+chicago_week_now|2026 38
+(1 row)
+k|string_agg
+floor_funnel_keys|gaps,fills,ticks,units,orders,intents,skipped,window_h,cancelled,fill_rows,by_variant,candidates,placements,rejected_total,intent_episodes,intent_verdicts,candidate_signals,episode_gap_rule_s,opportunity_episodes,orders_filled_actual,orders_filled_counterfactual
+(1 row)
+k|text
+floor_exposure_coverage|{"note": "positions opened more than 14 days ago are not counted", "complete": false, "window_days": 14}
+(1 row)
+k|format
+floor_episode_gap| opp 0 int 0
+(1 row)
+== 6D rows
+ERROR:  column "coverage_samples.variant_id" must appear in the GROUP BY clause or be used in an aggregate function
+LINE 1: select '6d_coverage_24h' k, format('%s %s', variant_id, roun...
+                                                    ^
+== continued at 12:44:24Z (6D rows; coverage statement grouped by variant_id)
+Output format is unaligned.
+k|format
+6d_coverage_24h|49af716f8708 0.6727
+6d_coverage_24h|5632da729fa7 0.6727
+6d_coverage_24h|64ba3ef09642 0.6727
+6d_coverage_24h|c2bc45377328 0.6727
+6d_coverage_24h|e549e693e117 0.6727
+6d_coverage_24h|f259ca109084 0.6727
+6d_coverage_24h|ff363c8ac08d 0.6727
+(7 rows)
+k|count
+6d_unexplained|8001
+(1 row)
+ERROR:  column "coverage_samples.outcome" must appear in the GROUP BY clause or be used in an aggregate function
+LINE 1: select '6d_missingness' k, format('%s %s', outcome, sum(n)) ...
+                                                   ^
+== continued at 12:45:00Z (6D rows from missingness; grouped by outcome)
+Output format is unaligned.
+k|format
+6d_missingness|no_fair 2130877
+(1 row)
+k|format
+6d_cells_populated|sport_null 6391 ttk_null 6391 mkt_null 6391 of 59696
+(1 row)
+k|count
+6d_fix48_clause|0
+(1 row)
+k|left
+6d_stage_costs|{}
+(1 row)
+k|format
+6d_episodes_24h|opp 3538 int 12796
+(1 row)
+k|format
+(0 rows)
+k|text
+6d_coverage_mb|46
+(1 row)
+k|format
+6d_episode_dead|opportunity_episodes live 6350 dead 855
+6d_episode_dead|intent_episodes live 56942 dead 4725
+(2 rows)
+ERROR:  column "id" does not exist
+LINE 1: select '6d_variants' k, string_agg(id::text, ',' order by id...
+                                           ^
+== continued at 12:45:30Z (6D tail rows; strategy_variants keyed by variant_id; null-cell split for item 21)
+Output format is unaligned.
+k|string_agg
+6d_variants|49af716f8708,5632da729fa7,64ba3ef09642,c2bc45377328,e549e693e117,e82fcd0a1e99,f259ca109084,ff363c8ac08d
+(1 row)
+k|format
+6d_latency_names|exec.fair_age_s 2026-09-18 12:43:57.913365+00
+6d_latency_names|exec.signal_to_order_ms 2026-09-18 05:49:29.078039+00
+6d_latency_names|normalize.backlog_age_s 2026-09-18 03:20:28.971243+00
+6d_latency_names|normalize.backlog_ids 2026-09-18 12:32:27.754353+00
+6d_latency_names|pricing.feed_lag_s 2026-09-18 05:47:58.971191+00
+6d_latency_names|recorder.phase_ms 2026-09-18 12:45:27.754484+00
+6d_latency_names|ws.tape_covered_frac 2026-09-18 12:00:28.971201+00
+(7 rows)
+k|count
+invalid_indexes|0
+(1 row)
+k|format
+item21_null_cells_by_outcome|completed null_sport 2128 of 28735
+item21_null_cells_by_outcome|no_fair null_sport 2128 of 2128
+item21_null_cells_by_outcome|scheduled null_sport 2135 of 28833
+(3 rows)
+k|format
+item21_null_cells_by_feed|featured null_sport 0 of 41741
+item21_null_cells_by_feed| null_sport 6391 of 17955
+(2 rows)
+ERROR:  column "coverage_samples.sport" must appear in the GROUP BY clause or be used in an aggregate function
+LINE 1: ..._order_cells' k, format('%s|%s|%s n=%s', coalesce(sport,'NUL...
+                                                             ^
+== continued at 12:47:26Z (6D row 2 verbatim reconciliation query with 'is not distinct from'; companion integrity count; market_order cells)
+Output format is unaligned.
+k|v
+row2_unexplained_verbatim|98
+(1 row)
+k|v
+row2_unexplained_sample|24413 nfl gt36h featured moneyline 5632da729fa7 2026-09-18 01:16:35.655986+00
+row2_unexplained_sample|24413 nfl lt20m featured moneyline 5632da729fa7 2026-09-18 01:16:35.655986+00
+row2_unexplained_sample|24413 ncaaf gt36h featured moneyline 5632da729fa7 2026-09-18 01:16:35.655986+00
+row2_unexplained_sample|24413     5632da729fa7 2026-09-18 01:16:35.655986+00
+row2_unexplained_sample|24413 ncaaf 3h_36h featured moneyline 5632da729fa7 2026-09-18 01:16:35.655986+00
+(5 rows)
+k|v
+row2_unknown_outcomes|not_due 54882
+row2_unknown_outcomes|skipped_ladders 11
+row2_unknown_outcomes|skipped_alternates 8
+row2_unknown_outcomes|skipped_trades 6
+(4 rows)
+k|v
+item21_market_order_cells|NULL|NULL|NULL n=6295968
+item21_market_order_cells|ncaaf|gt36h|moneyline n=137466
+item21_market_order_cells|nfl|gt36h|moneyline n=51660
+item21_market_order_cells|ncaaf|gt36h|spread n=29603
+item21_market_order_cells|ncaaf|gt36h|total n=14644
+item21_market_order_cells|ncaaf|3h_36h|total n=13846
+item21_market_order_cells|nfl|gt36h|spread n=12054
+item21_market_order_cells|ncaaf|3h_36h|spread n=11557
+item21_market_order_cells|ncaaf|3h_36h|moneyline n=7714
+item21_market_order_cells|nfl|gt36h|total n=7028
+item21_market_order_cells|nfl|20m_3h|spread n=4606
+item21_market_order_cells|nfl|20m_3h|total n=3290
+(12 rows)

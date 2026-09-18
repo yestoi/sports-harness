@@ -1,0 +1,86 @@
+judged_at_utc=2026-09-18T12:43:36Z (07:43 CT); restart 07:23 CT (12:23Z) build 4066197 (fix 79 print cache, app-only); metrics since 12:23Z; pre-window 05:00-07:20 CT same day
+Output format is unaligned.
+SET
+k|v
+now|2026-09-18 07:43:36.553255-05
+(1 row)
+k|v
+heartbeat|age_s 39 loop_ms 15586 p95 17042 skipped 5572 loops 47511 open 0 err null ver 4.5 at 2026-09-18 07:42:57.913152-05
+(1 row)
+k|v
+metric exec.loop_ms|n=16 p50 15295.5 p95 16542.5 max 17042.0 last 15586.000000
+metric exec.nw_pending|n=16 p50 25301.0 p95 25301.0 max 25301.0 last 25301.000000
+metric exec.phase_batch_ms|n=16 p50 325.3 p95 519.8 max 651.7 last 316.333000
+metric exec.phase_per_row_ms|n=16 p50 854.0 p95 1024.3 max 1055.6 last 810.851000
+metric exec.phase_place_ms|n=16 p50 0.0 p95 0.0 max 0.0 last 0.001000
+metric exec.phase_tape_ms|n=16 p50 10154.5 p95 11197.7 max 11433.6 last 10570.319000
+metric exec.phase_walk_ms|n=16 p50 1304.2 p95 1766.3 max 2131.0 last 1311.731000
+metric exec.placed|n=16 p50 0.0 p95 0.0 max 0.0 last 0.000000
+metric exec.prints_cached_rows|n=16 p50 113516.5 p95 113807.8 max 113849.0 last 113849.000000
+metric exec.prints_cached_tickers|n=16 p50 148.0 p95 148.0 max 148.0 last 148.000000
+metric exec.prints_cap_fallbacks|n=16 p50 0.0 p95 0.0 max 0.0 last 0.000000
+metric exec.prints_full_reads|n=16 p50 0.0 p95 0.0 max 0.0 last 0.000000
+metric exec.prints_incremental_rows|n=16 p50 171.5 p95 182.3 max 183.0 last 178.000000
+metric exec.tape_print_rows|n=16 p50 113516.5 p95 113807.8 max 113849.0 last 113849.000000
+(14 rows)
+k|v
+pre metric exec.loop_ms|n=117 p50 14735.0 p95 20173.2
+pre metric exec.phase_tape_ms|n=117 p50 10058.2 p95 15595.5
+pre metric exec.placed|n=117 p50 0.0 p95 0.0
+pre metric exec.tape_print_rows|n=117 p50 111244.0 p95 112858.6
+(4 rows)
+ERROR:  column "fills.filled_at" must appear in the GROUP BY clause or be used in an aggregate function
+LINE 1: ...s_per_hour' k, format('%s %s', date_trunc('hour', filled_at)...
+                                                             ^
+== continued 12:44:19Z: fills per hour (12 h) and the tape-phase decomposition, pre (05:00-07:20 CT) vs post (since 07:23 CT)
+Output format is unaligned.
+SET
+k|v
+fills_per_hour|2026-09-17 19:00:00-05 2
+fills_per_hour|2026-09-17 20:00:00-05 2
+fills_per_hour|2026-09-17 23:00:00-05 2
+fills_per_hour|2026-09-18 04:00:00-05 2
+(4 rows)
+k|v
+fills_thu_window|2026-09-17 17:00:00-05 6
+fills_thu_window|2026-09-17 18:00:00-05 2
+fills_thu_window|2026-09-17 19:00:00-05 2
+fills_thu_window|2026-09-17 20:00:00-05 2
+fills_thu_window|2026-09-17 23:00:00-05 2
+(5 rows)
+k|v
+post exec.dirty_markets|n=17 p50 88.0 p95 93.2 max 94.0
+post exec.expiring_n|n=17 p50 0.0 p95 0.0 max 0.0
+post exec.phase_books_ms|n=17 p50 183.6 p95 196.7 max 206.6
+post exec.phase_commit_prev_ms|n=17 p50 2.6 p95 17.4 max 18.2
+post exec.phase_decide_ms|n=17 p50 45.9 p95 47.6 max 47.9
+post exec.phase_intake_ms|n=17 p50 15.0 p95 16.5 max 17.9
+post exec.phase_load_ms|n=17 p50 2006.5 p95 2596.7 max 2768.5
+post exec.phase_samples_ms|n=17 p50 16.2 p95 19.5 max 25.3
+post exec.tape_batch_min|n=17 p50 20000.0 p95 20000.0 max 20000.0
+post exec.tape_delta_rows|n=17 p50 675197.0 p95 679750.0 max 680130.0
+post exec.tape_lag_tickers|n=17 p50 5.0 p95 5.0 max 5.0
+post exec.tape_tickers_n|n=17 p50 148.0 p95 148.0 max 148.0
+post exec.working_rows|n=17 p50 25301.0 p95 25301.0 max 25301.0
+post exec.ws_event_age_s|n=17 p50 0.0 p95 0.1 max 0.4
+post exec.ws_event_ahead_s|n=17 p50 1.2 p95 2.2 max 2.5
+(15 rows)
+k|v
+pre exec.dirty_markets|n=117 p50 78.0 p95 92.0 max 96.0
+pre exec.expiring_n|n=117 p50 0.0 p95 0.0 max 0.0
+pre exec.phase_books_ms|n=117 p50 172.1 p95 180.9 max 208.1
+pre exec.tape_batch_min|n=117 p50 5000.0 p95 5000.0 max 5000.0
+pre exec.tape_delta_rows|n=117 p50 652343.0 p95 665210.6 max 668398.0
+pre exec.tape_lag_tickers|n=117 p50 5.0 p95 5.0 max 5.0
+pre exec.tape_tickers_n|n=117 p50 148.0 p95 148.0 max 148.0
+pre exec.working_rows|n=117 p50 25301.0 p95 25301.0 max 25301.0
+pre exec.ws_event_ahead_s|n=117 p50 0.3 p95 5.1 max 5.9
+(9 rows)
+k|v
+errors_post|0.000000
+(1 row)
+k|v
+last_error_events|0
+(1 row)
+k|v
+(0 rows)

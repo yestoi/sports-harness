@@ -1,0 +1,58 @@
+shell_at_utc=2026-09-18T12:39:23Z (07:39 CT)
+== status
+NAME                            IMAGE                                                                              COMMAND                  SERVICE        CREATED          STATUS                    PORTS
+sports-harness-app-backup-1     postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94   "docker-entrypoint.s…"   app-backup     5 days ago       Up 3 days                 5432/tcp
+sports-harness-app-exec-1       sports-release/app:4066197                                                         "harness exec"           app-exec       16 minutes ago   Up 16 minutes (healthy)   
+sports-harness-app-research-1   sports-release/app:4066197                                                         "harness research-wo…"   app-research   16 minutes ago   Up 16 minutes             
+sports-harness-app-run-1        sports-release/app:4066197                                                         "harness run"            app-run        16 minutes ago   Up 16 minutes             
+sports-harness-app-serve-1      sports-release/app:4066197                                                         "harness serve --por…"   app-serve      16 minutes ago   Up 16 minutes (healthy)   127.0.0.1:8180->8080/tcp
+sports-harness-app-ws-1         sports-release/app:747791c                                                         "harness ws-record"      app-ws         46 hours ago     Up 46 hours               
+sports-harness-postgres-1       postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94   "docker-entrypoint.s…"   postgres       5 days ago       Up 3 days (healthy)       5432/tcp
+{"status":"ok","last_run_at":"2026-09-18T12:38:57.754466+00:00","last_status":"skipped","seconds_since":25,"credits_remaining":4887675,"credits_budget":5000000,"credits_low":false,"venue_limits":{"tier":"basic","age_s":570.0,"read_at":"2026-09-18T12:22:57.754637+00:00","page_pause_s":0.05,"read_capacity":600.0,"write_capacity":100.0,"read_refill_rate":200.0,"write_refill_rate":100.0},"build":"4066197"} [200]
+== df/free
+/dev/mapper/root  952G  174G  773G  19% /srv/sports-harness
+               total        used        free      shared  buff/cache   available
+Mem:           31904        9537        5125        1515       20501       22367
+Swap:          63808        2310       61498
+== dashboard section (10m)
+0
+== ERROR lines 10m
+== app-run
+== app-serve
+== app-ws
+== app-exec
+== app-research
+== healthz
+{"status":"ok","last_run_at":"2026-09-18T12:38:57.754466+00:00","last_status":"skipped","seconds_since":26,"credits_remaining":4887675,"credits_budget":5000000,"credits_low":false,"venue_limits":{"tier":"basic","age_s":570.0,"read_at":"2026-09-18T12:22:57.754637+00:00","page_pause_s":0.05,"read_capacity":600.0,"write_capacity":100.0,"read_refill_rate":200.0,"write_refill_rate":100.0},"build":"4066197"}
+== backups
+33G	/srv/sports-harness/backups
+220K	/srv/sports-harness/backups/forever
+22G	/srv/sports-harness/backups/nightly
+8.5G	/srv/sports-harness/backups/partitions
+2.6G	/srv/sports-harness/backups/weekly
+-rw-r--r-- 2 trey trey       1916 Sep 17 03:32 harness-nightly-20260917T083000Z.meta.json
+-rw-r--r-- 2 trey trey          0 Sep 17 03:42 harness-nightly-20260917T083000Z.ok
+-rw-r--r-- 1 trey trey 1720944552 Sep 18 03:32 harness-nightly-20260918T083000Z.dump
+-rw-r--r-- 2 trey trey 1721364896 Sep 18 03:34 harness-nightly-20260918T083000Z.dump.age
+-rw-r--r-- 2 trey trey       1917 Sep 18 03:32 harness-nightly-20260918T083000Z.meta.json
+-rw-r--r-- 2 trey trey          0 Sep 18 03:34 harness-nightly-20260918T083000Z.ok
+0
+== research
+NAME                            IMAGE                        COMMAND                  SERVICE        CREATED          STATUS          PORTS
+sports-harness-app-research-1   sports-release/app:4066197   "harness research-wo…"   app-research   16 minutes ago   Up 16 minutes   
+{"asctime": "2026-09-18 12:37:00,659", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, anno
+{"asctime": "2026-09-18 12:37:30,731", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, anno
+{"asctime": "2026-09-18 12:38:00,815", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, anno
+{"asctime": "2026-09-18 12:38:30,891", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, anno
+{"asctime": "2026-09-18 12:39:00,967", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, anno
+    volumes:
+      - type: bind
+        source: /srv/sports-harness/secrets/anthropic_api_key
+        target: /run/secrets/anthropic_api_key
+--
+    volumes:
+      - type: bind
+        source: /srv/sports-harness/pgdata
+        target: /var/lib/postgresql/data
+== snap
+{"now": "2026-09-18T12:39:23.965822+00:00", "snapshots": [{"name": "floor", "generated_at": "2026-09-18T12:38:57.925973+00:00", "age_s": 26.039849, "cadence_s": 120, "elapsed_ms": 158, "error": null}, {"name": "gate", "generated_at": "2026-09-18T12:38:27.926048+00:00", "age_s": 56.039774, "cadence_s": 300, "elapsed_ms": 2, "error": null}, {"name": "pulse", "generated_at": "2026-09-18T12:38:27.926392+00:00", "age_s": 56.03943, "cadence_s": 60, "elapsed_ms": 112, "error": null}, {"name": "study:2026-37", "generated_at": "2026-09-14T14:04:22.837503+00:00", "age_s": 340501.128319, "cadence_s": 600, "elapsed_ms": 177, "error": null}, {"name": "study:2026-38", "generated_at": "2026-09-18T12:34:27.926364+00:00", "age_s": 296.039458, "cadence_s": 600, "elapsed_ms": 102, "error": null}, {"name": "ticket", "generated_at": "2026-09-18T12:37:57.925963+00:00", "age_s": 86.039859, "cadence_s": 120, "elapsed_ms": 7, "error": null}]}
