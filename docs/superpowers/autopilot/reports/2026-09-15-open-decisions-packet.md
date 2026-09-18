@@ -163,3 +163,14 @@ At 18:20 CT the loop that carried the NCAAF cohort (1,116 rows expiring) ran 125
 ### T18b (4.6): no watched window yet
 
 `player_stat_events` is written only for carded players of placed or alive cards, and no card exists, so tonight is not a "watched NFL window" in the plan's sense: the T18b measurement and T19's rows wait for your first card. The plan's cadence query is not valid SQL as written (WINDOW before WHERE and an aggregate over a window function); the corrected form is in `evidence/2026-09-17-window-1830.txt` for T19.
+
+## Added Fri 2026-09-18 09:15 CT (your two Friday ruling files, journal 272 and 278; outcomes in 274-281)
+
+### 1, 19-23. Where each ruling stands
+
+- **1 (storage):** option 1, your decrypt first, decide-by 2026-09-22; nothing executed.
+- **19 (veto caps):** caps unchanged; the veto study is a finding (journal 274, `reports/2026-09-18-veto-pacing-brief.md`); the daily line now notes refusals: Friday the veto hit the $25 cap at 08:57 CT (414 calls) and is dormant for tonight's NCAAF games again.
+- **20 / row 79:** the print cache shipped app-only 07:23 CT (4066197) and is judged: mechanism PASS (full reads 0-3 an hour), effect FAIL (the tape phase is unchanged at ~10-12 s because the cost is the delta re-read from frozen cursors, not prints). Row 79 stays Open for your close-or-follow-on ruling. **Observation:** the oldest pending cursor (2026-09-14 18:09Z, 28.8 M deltas behind) has not moved in four days although its batch is fully admissible; a read-only query runs at 17:55 CT tonight.
+- **21 (coverage):** waived; step 1 is 6D Task 11 (plan revision 3, reviewed and being implemented Friday; app-only release before 18:30 CT if clean in time, else Saturday morning); the `COVERAGE_ROW_CAP` worst-case observation is withdrawn: the plan review proved the reachable cells fall to 504 (≤ 3,024 completion rows a run, under the 3,072 cap).
+- **22 / row 85:** the concurrent index is merged (82401bd) and held for Monday's quiet-window full release; your 120 s `lock_timeout` amendment is committed on the branch (c643e09) and in its one scoped re-review round; `indisvalid` read by hand after the release, invalid is a stop.
+- **23 / row 86:** the design read is consumed; the Saturday question is prepared in `reports/2026-09-19-lagging-close-question.md` (both sides, what a replay must show, the Sep 14 tracks, seven open questions; tonight's query 4 attached when run). Nothing proposed, no executor code.
