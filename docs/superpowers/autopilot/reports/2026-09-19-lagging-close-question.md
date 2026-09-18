@@ -375,3 +375,309 @@ Nothing instructed me. Four records:
    00:05Z expiry. I used the per-loop metric series instead.
 4. **The controller's Q2 returned 0 rows** because the cohort had already closed, while Q2b's 25,301
    is a different population: two query blocks in one file that invite being read as one set.
+
+## Query 4, before half (Fri 2026-09-18 17:54 CT, read-only, `query4.sh before`)
+
+Appended by the controller (sports-e2). Summary, read from the rows below:
+
+- Tonight's 18:00 CT NCAAF cohort: 7 tickers, 1,640 open (`nw_done = false`) rows; cursors are advancing (per-ticker distinct cursors 2 to 113, max cursor about 200.5M against the tape head), so the cohort is not frozen before the window.
+- Loop series over the last 40 minutes: 32 samples, `exec.loop_ms` mean 27.5 s, max 40.7 s; the last sample (22:53Z) shows `phase_tape_ms` 14,005, `phase_per_row_ms` 1,431, `tape_lag_tickers` 9, `placed` 1.
+- The frozen-cursor rows are all cancelled rows on two Sunday/Monday NFL totals (MIA-SF cursor 170434701, NYG-LAR cursor 178501415), placed 2026-09-14/15; the MIA-SF tape has 46 deltas past that cursor and its newest event is 2026-09-14 18:45Z. The market is matched, kickoff 2026-09-20 20:25Z, close 2026-09-22 20:25Z. These are not tonight's cohort.
+- The script's last statement named a `venue_markets.status` column that does not exist; it was re-run once with `match_status`, `close_time` and `expected_expiration_time` (appended at the end of the output).
+
+```
+query4_at_utc=2026-09-18T22:54:23Z (17:54 CT) label=before
+Output format is unaligned.
+k|ticker|rows|cursors|min_cursor|max_cursor
+q4_cohort_cursors|KXNCAAFGAME-26SEP18HOUTTU-HOU|531|113|179734852|200499132
+q4_cohort_cursors|KXNCAAFGAME-26SEP18HOUTTU-TTU|504|67|181302926|200716632
+q4_cohort_cursors|KXNCAAFSPREAD-26SEP18HOUTTU-TTU8|286|55|181303049|200716910
+q4_cohort_cursors|KXNCAAFTOTAL-26SEP18MIAWAKE-57|125|18|181302923|200476362
+q4_cohort_cursors|KXNCAAFTOTAL-26SEP18HOUTTU-53|88|32|198385388|200715873
+q4_cohort_cursors|KXNCAAFSPREAD-26SEP18MIAWAKE-MIA21|74|31|198251725|200515976
+q4_cohort_cursors|KXNCAAFTOTAL-26SEP18MIAWAKE-56|32|2|199769919|200716707
+(7 rows)
+k|nw_done|count
+q4_cohort_done|f|1640
+(1 row)
+k|ts|name|round
+q4_loop_series|2026-09-18 22:15:12.913409+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:15:12.913409+00|exec.loop_ms|18976
+q4_loop_series|2026-09-18 22:15:12.913409+00|exec.nw_pending|29685
+q4_loop_series|2026-09-18 22:15:12.913409+00|exec.per_row_book_query|25
+q4_loop_series|2026-09-18 22:15:12.913409+00|exec.phase_per_row_ms|1260
+q4_loop_series|2026-09-18 22:15:12.913409+00|exec.phase_tape_ms|13188
+q4_loop_series|2026-09-18 22:15:12.913409+00|exec.placed|0
+q4_loop_series|2026-09-18 22:15:12.913409+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:16:12.913193+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:16:12.913193+00|exec.loop_ms|24681
+q4_loop_series|2026-09-18 22:16:12.913193+00|exec.nw_pending|29685
+q4_loop_series|2026-09-18 22:16:12.913193+00|exec.per_row_book_query|31
+q4_loop_series|2026-09-18 22:16:12.913193+00|exec.phase_per_row_ms|1455
+q4_loop_series|2026-09-18 22:16:12.913193+00|exec.phase_tape_ms|13427
+q4_loop_series|2026-09-18 22:16:12.913193+00|exec.placed|0
+q4_loop_series|2026-09-18 22:16:12.913193+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:17:12.913114+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:17:12.913114+00|exec.loop_ms|24716
+q4_loop_series|2026-09-18 22:17:12.913114+00|exec.nw_pending|29685
+q4_loop_series|2026-09-18 22:17:12.913114+00|exec.per_row_book_query|34
+q4_loop_series|2026-09-18 22:17:12.913114+00|exec.phase_per_row_ms|1275
+q4_loop_series|2026-09-18 22:17:12.913114+00|exec.phase_tape_ms|13551
+q4_loop_series|2026-09-18 22:17:12.913114+00|exec.placed|0
+q4_loop_series|2026-09-18 22:17:12.913114+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:18:12.913031+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:18:12.913031+00|exec.loop_ms|36980
+q4_loop_series|2026-09-18 22:18:12.913031+00|exec.nw_pending|29685
+q4_loop_series|2026-09-18 22:18:12.913031+00|exec.per_row_book_query|29
+q4_loop_series|2026-09-18 22:18:12.913031+00|exec.phase_per_row_ms|1237
+q4_loop_series|2026-09-18 22:18:12.913031+00|exec.phase_tape_ms|30624
+q4_loop_series|2026-09-18 22:18:12.913031+00|exec.placed|0
+q4_loop_series|2026-09-18 22:18:12.913031+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:19:57.913033+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:19:57.913033+00|exec.loop_ms|26951
+q4_loop_series|2026-09-18 22:19:57.913033+00|exec.nw_pending|29685
+q4_loop_series|2026-09-18 22:19:57.913033+00|exec.per_row_book_query|26
+q4_loop_series|2026-09-18 22:19:57.913033+00|exec.phase_per_row_ms|1258
+q4_loop_series|2026-09-18 22:19:57.913033+00|exec.phase_tape_ms|15684
+q4_loop_series|2026-09-18 22:19:57.913033+00|exec.placed|0
+q4_loop_series|2026-09-18 22:19:57.913033+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:20:57.913137+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:20:57.913137+00|exec.loop_ms|36039
+q4_loop_series|2026-09-18 22:20:57.913137+00|exec.nw_pending|29685
+q4_loop_series|2026-09-18 22:20:57.913137+00|exec.per_row_book_query|23
+q4_loop_series|2026-09-18 22:20:57.913137+00|exec.phase_per_row_ms|1284
+q4_loop_series|2026-09-18 22:20:57.913137+00|exec.phase_tape_ms|26229
+q4_loop_series|2026-09-18 22:20:57.913137+00|exec.placed|3
+q4_loop_series|2026-09-18 22:20:57.913137+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:22:12.913165+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:22:12.913165+00|exec.loop_ms|24776
+q4_loop_series|2026-09-18 22:22:12.913165+00|exec.nw_pending|29688
+q4_loop_series|2026-09-18 22:22:12.913165+00|exec.per_row_book_query|23
+q4_loop_series|2026-09-18 22:22:12.913165+00|exec.phase_per_row_ms|1235
+q4_loop_series|2026-09-18 22:22:12.913165+00|exec.phase_tape_ms|18874
+q4_loop_series|2026-09-18 22:22:12.913165+00|exec.placed|0
+q4_loop_series|2026-09-18 22:22:12.913165+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:23:27.913003+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:23:27.913003+00|exec.loop_ms|24194
+q4_loop_series|2026-09-18 22:23:27.913003+00|exec.nw_pending|29688
+q4_loop_series|2026-09-18 22:23:27.913003+00|exec.per_row_book_query|43
+q4_loop_series|2026-09-18 22:23:27.913003+00|exec.phase_per_row_ms|2205
+q4_loop_series|2026-09-18 22:23:27.913003+00|exec.phase_tape_ms|15741
+q4_loop_series|2026-09-18 22:23:27.913003+00|exec.placed|6
+q4_loop_series|2026-09-18 22:23:27.913003+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:24:42.913153+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:24:42.913153+00|exec.loop_ms|24124
+q4_loop_series|2026-09-18 22:24:42.913153+00|exec.nw_pending|29694
+q4_loop_series|2026-09-18 22:24:42.913153+00|exec.per_row_book_query|9
+q4_loop_series|2026-09-18 22:24:42.913153+00|exec.phase_per_row_ms|1760
+q4_loop_series|2026-09-18 22:24:42.913153+00|exec.phase_tape_ms|17451
+q4_loop_series|2026-09-18 22:24:42.913153+00|exec.placed|0
+q4_loop_series|2026-09-18 22:24:42.913153+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:25:42.912908+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:25:42.912908+00|exec.loop_ms|27766
+q4_loop_series|2026-09-18 22:25:42.912908+00|exec.nw_pending|29694
+q4_loop_series|2026-09-18 22:25:42.912908+00|exec.per_row_book_query|23
+q4_loop_series|2026-09-18 22:25:42.912908+00|exec.phase_per_row_ms|1845
+q4_loop_series|2026-09-18 22:25:42.912908+00|exec.phase_tape_ms|15697
+q4_loop_series|2026-09-18 22:25:42.912908+00|exec.placed|0
+q4_loop_series|2026-09-18 22:25:42.912908+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:26:57.91302+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:26:57.91302+00|exec.loop_ms|29001
+q4_loop_series|2026-09-18 22:26:57.91302+00|exec.nw_pending|29694
+q4_loop_series|2026-09-18 22:26:57.91302+00|exec.per_row_book_query|23
+q4_loop_series|2026-09-18 22:26:57.91302+00|exec.phase_per_row_ms|1426
+q4_loop_series|2026-09-18 22:26:57.91302+00|exec.phase_tape_ms|22241
+q4_loop_series|2026-09-18 22:26:57.91302+00|exec.placed|0
+q4_loop_series|2026-09-18 22:26:57.91302+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:27:57.913179+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:27:57.913179+00|exec.loop_ms|31245
+q4_loop_series|2026-09-18 22:27:57.913179+00|exec.nw_pending|29694
+q4_loop_series|2026-09-18 22:27:57.913179+00|exec.per_row_book_query|35
+q4_loop_series|2026-09-18 22:27:57.913179+00|exec.phase_per_row_ms|1277
+q4_loop_series|2026-09-18 22:27:57.913179+00|exec.phase_tape_ms|25019
+q4_loop_series|2026-09-18 22:27:57.913179+00|exec.placed|0
+q4_loop_series|2026-09-18 22:27:57.913179+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:29:12.913071+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:29:12.913071+00|exec.loop_ms|30823
+q4_loop_series|2026-09-18 22:29:12.913071+00|exec.nw_pending|29694
+q4_loop_series|2026-09-18 22:29:12.913071+00|exec.per_row_book_query|33
+q4_loop_series|2026-09-18 22:29:12.913071+00|exec.phase_per_row_ms|1353
+q4_loop_series|2026-09-18 22:29:12.913071+00|exec.phase_tape_ms|24599
+q4_loop_series|2026-09-18 22:29:12.913071+00|exec.placed|0
+q4_loop_series|2026-09-18 22:29:12.913071+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:30:27.913263+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:30:27.913263+00|exec.loop_ms|30966
+q4_loop_series|2026-09-18 22:30:27.913263+00|exec.nw_pending|29694
+q4_loop_series|2026-09-18 22:30:27.913263+00|exec.per_row_book_query|38
+q4_loop_series|2026-09-18 22:30:27.913263+00|exec.phase_per_row_ms|1905
+q4_loop_series|2026-09-18 22:30:27.913263+00|exec.phase_tape_ms|23713
+q4_loop_series|2026-09-18 22:30:27.913263+00|exec.placed|0
+q4_loop_series|2026-09-18 22:30:27.913263+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:31:57.913171+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:31:57.913171+00|exec.loop_ms|21363
+q4_loop_series|2026-09-18 22:31:57.913171+00|exec.nw_pending|29697
+q4_loop_series|2026-09-18 22:31:57.913171+00|exec.per_row_book_query|35
+q4_loop_series|2026-09-18 22:31:57.913171+00|exec.phase_per_row_ms|1465
+q4_loop_series|2026-09-18 22:31:57.913171+00|exec.phase_tape_ms|14759
+q4_loop_series|2026-09-18 22:31:57.913171+00|exec.placed|3
+q4_loop_series|2026-09-18 22:31:57.913171+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:32:57.913017+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:32:57.913017+00|exec.loop_ms|25234
+q4_loop_series|2026-09-18 22:32:57.913017+00|exec.nw_pending|29697
+q4_loop_series|2026-09-18 22:32:57.913017+00|exec.per_row_book_query|27
+q4_loop_series|2026-09-18 22:32:57.913017+00|exec.phase_per_row_ms|1418
+q4_loop_series|2026-09-18 22:32:57.913017+00|exec.phase_tape_ms|13835
+q4_loop_series|2026-09-18 22:32:57.913017+00|exec.placed|0
+q4_loop_series|2026-09-18 22:32:57.913017+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:33:57.913145+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:33:57.913145+00|exec.loop_ms|25701
+q4_loop_series|2026-09-18 22:33:57.913145+00|exec.nw_pending|29697
+q4_loop_series|2026-09-18 22:33:57.913145+00|exec.per_row_book_query|35
+q4_loop_series|2026-09-18 22:33:57.913145+00|exec.phase_per_row_ms|1348
+q4_loop_series|2026-09-18 22:33:57.913145+00|exec.phase_tape_ms|19946
+q4_loop_series|2026-09-18 22:33:57.913145+00|exec.placed|0
+q4_loop_series|2026-09-18 22:33:57.913145+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:35:27.913301+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:35:27.913301+00|exec.loop_ms|24630
+q4_loop_series|2026-09-18 22:35:27.913301+00|exec.nw_pending|29698
+q4_loop_series|2026-09-18 22:35:27.913301+00|exec.per_row_book_query|30
+q4_loop_series|2026-09-18 22:35:27.913301+00|exec.phase_per_row_ms|1456
+q4_loop_series|2026-09-18 22:35:27.913301+00|exec.phase_tape_ms|13597
+q4_loop_series|2026-09-18 22:35:27.913301+00|exec.placed|1
+q4_loop_series|2026-09-18 22:35:27.913301+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:36:27.913321+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:36:27.913321+00|exec.loop_ms|40747
+q4_loop_series|2026-09-18 22:36:27.913321+00|exec.nw_pending|29701
+q4_loop_series|2026-09-18 22:36:27.913321+00|exec.per_row_book_query|24
+q4_loop_series|2026-09-18 22:36:27.913321+00|exec.phase_per_row_ms|1395
+q4_loop_series|2026-09-18 22:36:27.913321+00|exec.phase_tape_ms|34827
+q4_loop_series|2026-09-18 22:36:27.913321+00|exec.placed|3
+q4_loop_series|2026-09-18 22:36:27.913321+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:37:42.913032+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:37:42.913032+00|exec.loop_ms|26595
+q4_loop_series|2026-09-18 22:37:42.913032+00|exec.nw_pending|29701
+q4_loop_series|2026-09-18 22:37:42.913032+00|exec.per_row_book_query|36
+q4_loop_series|2026-09-18 22:37:42.913032+00|exec.phase_per_row_ms|1432
+q4_loop_series|2026-09-18 22:37:42.913032+00|exec.phase_tape_ms|20737
+q4_loop_series|2026-09-18 22:37:42.913032+00|exec.placed|0
+q4_loop_series|2026-09-18 22:37:42.913032+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:39:12.913079+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:39:12.913079+00|exec.loop_ms|26434
+q4_loop_series|2026-09-18 22:39:12.913079+00|exec.nw_pending|29701
+q4_loop_series|2026-09-18 22:39:12.913079+00|exec.per_row_book_query|28
+q4_loop_series|2026-09-18 22:39:12.913079+00|exec.phase_per_row_ms|1646
+q4_loop_series|2026-09-18 22:39:12.913079+00|exec.phase_tape_ms|13556
+q4_loop_series|2026-09-18 22:39:12.913079+00|exec.placed|5
+q4_loop_series|2026-09-18 22:39:12.913079+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:40:12.913192+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:40:12.913192+00|exec.loop_ms|29021
+q4_loop_series|2026-09-18 22:40:12.913192+00|exec.nw_pending|29706
+q4_loop_series|2026-09-18 22:40:12.913192+00|exec.per_row_book_query|22
+q4_loop_series|2026-09-18 22:40:12.913192+00|exec.phase_per_row_ms|1510
+q4_loop_series|2026-09-18 22:40:12.913192+00|exec.phase_tape_ms|22792
+q4_loop_series|2026-09-18 22:40:12.913192+00|exec.placed|0
+q4_loop_series|2026-09-18 22:40:12.913192+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:41:42.913485+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:41:42.913485+00|exec.loop_ms|32697
+q4_loop_series|2026-09-18 22:41:42.913485+00|exec.nw_pending|29706
+q4_loop_series|2026-09-18 22:41:42.913485+00|exec.per_row_book_query|34
+q4_loop_series|2026-09-18 22:41:42.913485+00|exec.phase_per_row_ms|1529
+q4_loop_series|2026-09-18 22:41:42.913485+00|exec.phase_tape_ms|18701
+q4_loop_series|2026-09-18 22:41:42.913485+00|exec.placed|0
+q4_loop_series|2026-09-18 22:41:42.913485+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:42:57.913087+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:42:57.913087+00|exec.loop_ms|29332
+q4_loop_series|2026-09-18 22:42:57.913087+00|exec.nw_pending|29709
+q4_loop_series|2026-09-18 22:42:57.913087+00|exec.per_row_book_query|23
+q4_loop_series|2026-09-18 22:42:57.913087+00|exec.phase_per_row_ms|1539
+q4_loop_series|2026-09-18 22:42:57.913087+00|exec.phase_tape_ms|22870
+q4_loop_series|2026-09-18 22:42:57.913087+00|exec.placed|3
+q4_loop_series|2026-09-18 22:42:57.913087+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:44:27.91324+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:44:27.91324+00|exec.loop_ms|29165
+q4_loop_series|2026-09-18 22:44:27.91324+00|exec.nw_pending|29709
+q4_loop_series|2026-09-18 22:44:27.91324+00|exec.per_row_book_query|33
+q4_loop_series|2026-09-18 22:44:27.91324+00|exec.phase_per_row_ms|1503
+q4_loop_series|2026-09-18 22:44:27.91324+00|exec.phase_tape_ms|15157
+q4_loop_series|2026-09-18 22:44:27.91324+00|exec.placed|0
+q4_loop_series|2026-09-18 22:44:27.91324+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:45:57.913044+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:45:57.913044+00|exec.loop_ms|21866
+q4_loop_series|2026-09-18 22:45:57.913044+00|exec.nw_pending|29709
+q4_loop_series|2026-09-18 22:45:57.913044+00|exec.per_row_book_query|39
+q4_loop_series|2026-09-18 22:45:57.913044+00|exec.phase_per_row_ms|1720
+q4_loop_series|2026-09-18 22:45:57.913044+00|exec.phase_tape_ms|15204
+q4_loop_series|2026-09-18 22:45:57.913044+00|exec.placed|0
+q4_loop_series|2026-09-18 22:45:57.913044+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:47:12.912982+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:47:12.912982+00|exec.loop_ms|27941
+q4_loop_series|2026-09-18 22:47:12.912982+00|exec.nw_pending|29709
+q4_loop_series|2026-09-18 22:47:12.912982+00|exec.per_row_book_query|27
+q4_loop_series|2026-09-18 22:47:12.912982+00|exec.phase_per_row_ms|1507
+q4_loop_series|2026-09-18 22:47:12.912982+00|exec.phase_tape_ms|21377
+q4_loop_series|2026-09-18 22:47:12.912982+00|exec.placed|0
+q4_loop_series|2026-09-18 22:47:12.912982+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:48:42.913149+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:48:42.913149+00|exec.loop_ms|25849
+q4_loop_series|2026-09-18 22:48:42.913149+00|exec.nw_pending|29709
+q4_loop_series|2026-09-18 22:48:42.913149+00|exec.per_row_book_query|36
+q4_loop_series|2026-09-18 22:48:42.913149+00|exec.phase_per_row_ms|2350
+q4_loop_series|2026-09-18 22:48:42.913149+00|exec.phase_tape_ms|19038
+q4_loop_series|2026-09-18 22:48:42.913149+00|exec.placed|0
+q4_loop_series|2026-09-18 22:48:42.913149+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:49:57.913305+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:49:57.913305+00|exec.loop_ms|21150
+q4_loop_series|2026-09-18 22:49:57.913305+00|exec.nw_pending|29709
+q4_loop_series|2026-09-18 22:49:57.913305+00|exec.per_row_book_query|23
+q4_loop_series|2026-09-18 22:49:57.913305+00|exec.phase_per_row_ms|1470
+q4_loop_series|2026-09-18 22:49:57.913305+00|exec.phase_tape_ms|14251
+q4_loop_series|2026-09-18 22:49:57.913305+00|exec.placed|0
+q4_loop_series|2026-09-18 22:49:57.913305+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:50:57.91293+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:50:57.91293+00|exec.loop_ms|26631
+q4_loop_series|2026-09-18 22:50:57.91293+00|exec.nw_pending|29709
+q4_loop_series|2026-09-18 22:50:57.91293+00|exec.per_row_book_query|33
+q4_loop_series|2026-09-18 22:50:57.91293+00|exec.phase_per_row_ms|1348
+q4_loop_series|2026-09-18 22:50:57.91293+00|exec.phase_tape_ms|15655
+q4_loop_series|2026-09-18 22:50:57.91293+00|exec.placed|0
+q4_loop_series|2026-09-18 22:50:57.91293+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:51:57.91332+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:51:57.91332+00|exec.loop_ms|29507
+q4_loop_series|2026-09-18 22:51:57.91332+00|exec.nw_pending|29709
+q4_loop_series|2026-09-18 22:51:57.91332+00|exec.per_row_book_query|27
+q4_loop_series|2026-09-18 22:51:57.91332+00|exec.phase_per_row_ms|1385
+q4_loop_series|2026-09-18 22:51:57.91332+00|exec.phase_tape_ms|23593
+q4_loop_series|2026-09-18 22:51:57.91332+00|exec.placed|0
+q4_loop_series|2026-09-18 22:51:57.91332+00|exec.tape_lag_tickers|9
+q4_loop_series|2026-09-18 22:53:27.913119+00|exec.expiring_n|0
+q4_loop_series|2026-09-18 22:53:27.913119+00|exec.loop_ms|25530
+q4_loop_series|2026-09-18 22:53:27.913119+00|exec.nw_pending|29710
+q4_loop_series|2026-09-18 22:53:27.913119+00|exec.per_row_book_query|28
+q4_loop_series|2026-09-18 22:53:27.913119+00|exec.phase_per_row_ms|1431
+q4_loop_series|2026-09-18 22:53:27.913119+00|exec.phase_tape_ms|14005
+q4_loop_series|2026-09-18 22:53:27.913119+00|exec.placed|1
+q4_loop_series|2026-09-18 22:53:27.913119+00|exec.tape_lag_tickers|9
+(256 rows)
+k|ticker|cursor|expiry|placed_at|status|n
+frozen_cursor_rows|KXNFLTOTAL-26SEP20MIASF-46|170434701|2026-09-20 20:15:00+00|2026-09-14 17:54:30.393423+00|cancelled|1
+frozen_cursor_rows|KXNFLTOTAL-26SEP20MIASF-46|170434701|2026-09-20 20:15:00+00|2026-09-14 15:34:00.393364+00|cancelled|1
+frozen_cursor_rows|KXNFLTOTAL-26SEP21NYGLAR-49|178501415|2026-09-22 00:05:00+00|2026-09-15 14:47:38.846891+00|cancelled|4
+frozen_cursor_rows|KXNFLTOTAL-26SEP21NYGLAR-49|178501415|2026-09-22 00:05:00+00|2026-09-15 02:54:30.393092+00|cancelled|3
+frozen_cursor_rows|KXNFLTOTAL-26SEP21NYGLAR-49|178501415|2026-09-22 00:05:00+00|2026-09-15 05:45:15.580972+00|cancelled|4
+frozen_cursor_rows|KXNFLTOTAL-26SEP21NYGLAR-49|178501415|2026-09-22 00:05:00+00|2026-09-15 05:30:15.581319+00|cancelled|4
+frozen_cursor_rows|KXNFLTOTAL-26SEP21NYGLAR-49|178501415|2026-09-22 00:05:00+00|2026-09-15 13:04:57.232761+00|cancelled|3
+frozen_cursor_rows|KXNFLTOTAL-26SEP21NYGLAR-49|178501415|2026-09-22 00:05:00+00|2026-09-15 02:58:00.393488+00|cancelled|1
+(8 rows)
+k|ticker|newest_event|deltas_past_cursor|newest_snapshot
+frozen_cursor_ticker_tape|KXNFLTOTAL-26SEP20MIASF-46|2026-09-14 18:45:31.843+00|46|2026-09-14 18:09:28.941173+00
+(1 row)
+ERROR:  column vm.status does not exist
+LINE 1: select 'frozen_cursor_market' k, vm.ticker, vm.status, g.kic...
+                                                    ^
+HINT:  Perhaps you meant to reference the column "g.status".
+frozen_cursor_market rerun 17:54 CT (venue_markets has no status column; close_time, match_status, expected_expiration_time instead):
+Output format is unaligned.
+k|ticker|match_status|close_time|expected_expiration_time|kickoff_utc|sport
+frozen_cursor_market|KXNFLTOTAL-26SEP20MIASF-46|matched|2026-09-22 20:25:00+00|2026-09-20 23:25:00+00|2026-09-20 20:25:00+00|nfl
+(1 row)
+```
