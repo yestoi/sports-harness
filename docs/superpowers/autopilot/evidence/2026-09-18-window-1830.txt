@@ -1,0 +1,494 @@
+# Fri 2026-09-18 game-window read 1 (NCAAF kickoff 18:30 CT), runtime 4066197 (fix 79 print cache, released 07:23 CT), controller sports-e2, read started 18:27 CT
+# Layer 1: health status ok, build 4066197, credits 4,847,440. Layer 3: make verify-summary-omarchy DEPLOY_SHA=4066197 PASS 9/9 (pasted at the end).
+# Boundaries: order 10886, fill 1878, ledger 4, event 2562407. Query file window1.sql = Thursday's evidence/2026-09-17-window-1830.txt block verbatim; window2 (fills AFTER half) runs at 19:35 CT.
+
+## window1.sql
+\timing off
+\pset footer off
+select 'verify_at_utc', now();
+-- === game window (R4) ===
+select 'in_progress', count(*) from games where status = 'in_progress';
+select 'kickoff_-4h_+15m', count(*) from games where kickoff_utc between now() - interval '4 hours' and now() + interval '15 minutes';
+select 'nfl_60_100', count(*) from games where sport = 'nfl' and kickoff_utc between now() + interval '60 minutes' and now() + interval '100 minutes';
+select 'games_tonight', id, sport, status, kickoff_utc at time zone 'America/Chicago' as ko_ct, home_team_id, away_team_id from games where kickoff_utc between now() - interval '6 hours' and now() + interval '6 hours' order by kickoff_utc;
+-- === executor state ===
+select 'heartbeat', last_loop_at, last_loop_ms, p95_loop_ms, loops, loops_skipped, last_error, executor_version from exec_heartbeat;
+select 'skips_1h', reason, sum(v) from (select labels->>'reason' as reason, value as v from metric_samples where name = 'exec.skipped' and ts > now() - interval '1 hour') x group by 2 order by 3 desc;
+select 'loops_1h', count(*) as samples, count(*) filter (where value > 15000) as over_15s, count(*) filter (where value > 25000) as over_25s, round(percentile_disc(0.95) within group (order by value)) as p95, max(value) as max from metric_samples where name = 'exec.loop_ms' and ts > now() - interval '1 hour';
+select 'loop_over_25s_samples', ts, value from metric_samples where name = 'exec.loop_ms' and ts > now() - interval '8 hours' and value > 25000 order by ts;
+select 'nw_pending', ts, value from metric_samples where name = 'exec.nw_pending' order by ts desc limit 3;
+select 'nw_past_expiry', count(*) from orders where replay = false and nw_done = false and expiry < now();
+select 'open_orders', status, count(*) from orders where status in ('open','partially_filled') group by 2;
+select 'dirty_markets', ts, value from metric_samples where name = 'exec.dirty_markets' order by ts desc limit 1;
+-- === 6B section 3 (boundaries: order 10886, fill 1878, ledger 4, event 2562407) ===
+select '6b1_fills', count(*), sum(contracts), max(id) from fills where replay = false and id <= 1878;
+select '6b1_orders', sum(filled_contracts), sum(dirty_seconds), sum(traded_at_price), sum(nw_traded_at_price), sum(queue_remaining) from orders where replay = false and id <= 10886;
+select '6b1_ledger', count(*), sum(contracts), max(id) from ledger where replay = false and id <= 4;
+select '6b2_post_expiry_fill', count(*) from fills f join orders o on o.id = f.order_id where f.replay = false and f.id > 1878 and o.expiry is not null and f.filled_at > o.expiry;
+select '6b2_post_boundary_fills', count(*), min(filled_at), max(filled_at) from fills where replay = false and id > 1878;
+select '6b3_rejected_place', count(*) from order_events e where e.kind = 'place' and e.id > 2562407 and (select s.kind || ':' || coalesce(s.reason, '') from order_events s where s.intent_id = e.intent_id and s.id < e.id order by s.id desc limit 1) = 'skipped:signal_rejected';
+select '6b3_skips_written', count(*) from order_events where kind = 'skipped' and reason = 'signal_rejected' and id > 2562407;
+select '6b4_no_print_fills', count(*) from fills where replay = false and id > 1878 and fill_method = 'queue_model' and has_print = false;
+select '6b4_conservation', o.id, o.filled_contracts, sum(t.count) as hitting_volume from orders o join fills f on f.order_id = o.id and f.replay = false and f.fill_method = 'queue_model' join venue_trades t on t.ticker = o.ticker and t.ts >= o.placed_at and t.ts <= coalesce(o.cancelled_at, o.expiry) and t.taker_side = case when o.side = 'yes' then 'no' else 'yes' end and case when o.side = 'yes' then t.yes_price else 1 - t.yes_price end <= o.prob where o.replay = false and o.id > 10886 group by o.id, o.filled_contracts having o.filled_contracts > sum(t.count) limit 10;
+select '6b4_sample_n', count(distinct o.id) from orders o join fills f on f.order_id = o.id and f.replay = false and f.fill_method = 'queue_model' where o.replay = false and o.id > 10886;
+select '6b5_dirty_scope', count(*) from orders where replay = false and id > 10886 and status in ('cancelled','expired') and dirty_seconds > extract(epoch from (coalesce(cancelled_at, expiry) - placed_at));
+select '6b5_backoff', count(*) from orders where replay = false and nw_done = false and nw_next_attempt_at < now() - interval '3600 seconds';
+select '6b5_open_intervals', 'dirty' as t, count(*) from market_dirty_intervals where ended_at is null and started_at < now() - interval '2 hours' union all select '6b5_open_intervals', 'observation', count(*) from market_observation_intervals where ended_at is null and started_at < now() - interval '2 hours';
+select '6b_bycause_open', cause, count(*) from market_dirty_intervals where replay = false and ended_at is null group by 2 order by 2;
+select '6b_bycause_24h', cause, count(*) from market_dirty_intervals where replay = false and started_at > now() - interval '24 hours' group by 2 order by 2;
+select '6b8_gate', criteria_hash, evaluated_at, gate_variant from gate_reports order by id desc limit 3;
+select '6b8_eligibility', count(*) from gate_reports where criteria_json ? 'eligibility';
+-- === fills per hour (BEFORE half) ===
+select 'fills_per_hour', date_trunc('hour', filled_at) at time zone 'America/Chicago' as hour_ct, count(*), sum(contracts), count(*) filter (where fill_method='queue_model') as queue_model from fills where replay = false and filled_at > now() - interval '30 hours' group by 2 order by 2;
+select 'fills_total', count(*), max(id), max(filled_at) from fills where replay = false;
+-- === measurement note: nominal dirty-time under-count ===
+select 'dirty_accrual_24h', sum(nw_dirty_seconds) as nw_dirty_s, count(*) filter (where nw_dirty_seconds > 0) as rows_with_dirty from orders where replay = false and nw_done = false;
+select 'dirty_intervals_24h', count(*), sum(extract(epoch from (coalesce(ended_at, now()) - started_at))) as elapsed_s from market_dirty_intervals where replay = false and started_at > now() - interval '24 hours';
+select 'loop_period_1h', round(avg(value)) as mean_loop_ms, count(*) from metric_samples where name = 'exec.loop_ms' and ts > now() - interval '1 hour';
+-- === 6D rows ===
+select '6d_coverage', variant_id, sum(n) filter (where outcome = 'completed')::numeric / nullif(sum(n) filter (where outcome = 'scheduled'), 0) from coverage_samples where domain = 'evaluation' and ts > now() - interval '24 hours' group by 2 order by 2;
+select '6d_omissions', s.run_id, s.sport, s.ttk_bucket, s.feed, s.market_type, s.variant_id, s.ts from coverage_samples s where s.domain = 'evaluation' and s.outcome = 'scheduled' and s.ts > now() - interval '24 hours' and s.ts < now() - interval '16 minutes' and not exists (select 1 from coverage_samples c where c.run_id = s.run_id and c.domain = s.domain and c.outcome <> 'scheduled' and c.sport is not distinct from s.sport and c.ttk_bucket is not distinct from s.ttk_bucket and c.feed is not distinct from s.feed and c.market_type is not distinct from s.market_type and c.variant_id is not distinct from s.variant_id) limit 20;
+select '6d_unknown_outcomes', count(*) from coverage_samples where ts > now() - interval '24 hours' and outcome not in ('completed','scheduled','not_due','cadence_none','budget','budget_stage_skipped','skipped_trades','skipped_ladders','skipped_alternates','http_error','no_fair','no_gap','no_signal','capacity','no_book','stale','disabled','error');
+select '6d_outcomes', outcome, count(*) from coverage_samples where ts > now() - interval '24 hours' group by 2 order by 2;
+select '6d_missingness', outcome, sum(n) from coverage_samples where domain = 'evaluation' and ts > now() - interval '24 hours' and outcome not in ('completed','scheduled') group by 2 order by 3 desc;
+select '6d_fix48', count(*) from (select started_at, notes from runs order by id desc limit 2000) r where r.started_at > now() - interval '24 hours' and (r.notes->'pricing'->>'budget_exhausted')::boolean and jsonb_array_length(coalesce(r.notes->'pricing'->'order','[]'::jsonb)) = 0;
+select '6d_stage_costs', r.notes->'pricing' from (select id, notes from runs order by id desc limit 100) r where r.notes ? 'pricing' order by r.id desc limit 1;
+select '6d_episodes', (select count(*) from opportunity_episodes where started_at > now() - interval '24 hours') as opp_episodes, (select count(*) from intent_episodes where started_at > now() - interval '24 hours') as intent_episodes;
+select '6d_checks', check_name, status, ts, value from check_results where ts > now() - interval '25 hours' and check_name in ('duplicate_trades','fair_values_negative_staleness','fair_values_negative_feed_lag','intents_without_order_or_skip') and ts = (select max(ts) from check_results c2 where c2.check_name = check_results.check_name) order by 2;
+select '6d_ix_intents_created_invalid', count(*) from pg_index i join pg_class c on c.oid = i.indexrelid where c.relname = 'ix_intents_created' and not i.indisvalid;
+select '6d_variants', string_agg(variant_id, ',' order by variant_id), count(*) from strategy_variants;
+select '6d_latency_alive', name, max(ts), round(extract(epoch from (now() - max(ts)))) as age_s from metric_samples where name in ('recorder.phase_ms','normalize.backlog_ids','normalize.backlog_age_s','pricing.feed_lag_s','exec.fair_age_s','exec.signal_to_order_ms','ws.tape_covered_frac','rfq.stored_rows','rfq.yielded','coverage.truncated') and ts > now() - interval '24 hours' group by 2 order by 2;
+select '6d_negative_samples', count(*) from metric_samples where ts > now() - interval '24 hours' and value < 0;
+select '6d_coverage_mb', pg_total_relation_size('coverage_samples') / (1024*1024);
+select '6d_episode_tables', relname, n_live_tup, n_dead_tup from pg_stat_user_tables where relname in ('opportunity_episodes','intent_episodes');
+select 'alembic', version_num from alembic_version;
+-- === 4.5 rows ===
+select 'pulse_status', payload->'status'->>'status', payload->'status'->'rules' from dashboard_snapshots where name = 'pulse';
+select 'snapshot_disabled', count(*) from operator_events where kind = 'snapshot_disabled' and ts > now() - interval '25 hours';
+select 'snapshot_cpu_top', date_trunc('minute', ts) m, sum(value) from metric_samples where name = 'serve.snapshot_ms' and ts > now() - interval '1 hour' group by 2 order by 3 desc limit 3;
+select 'floor_p95', percentile_disc(0.95) within group (order by value) from metric_samples where name = 'serve.snapshot_ms' and labels->>'name' = 'floor' and ts > now() - interval '1 hour';
+-- === 4.6 T18b (during) ===
+select 't18b_stat_rows_8h', count(*) filter (where correction) as corrections, count(*) as rows, min(ts), max(ts) from player_stat_events where ts >= now() - interval '8 hours';
+select 't18b_cadence', player_id, stat, count(*) as rows, round(avg(gap)) as mean_gap_s, max(gap) as max_gap_s from (select player_id, stat, extract(epoch from ts - lag(ts) over (partition by player_id, stat order by ts)) as gap from player_stat_events where ts >= now() - interval '8 hours') g group by player_id, stat order by rows desc limit 20;
+select 't18b_carded_props', c.status, count(*) from parlay_legs l join parlay_cards c on c.id = l.card_id where l.market_type = 'prop' group by 2;
+select 't18b_source_state', key, credits_used, last_fetched_at from source_state where key like 'odds_props%' or key like 'espn_final%' or key = 'parlay_reprice' order by 1 limit 20;
+
+
+## window1 output
+Timing is off.
+   ?column?    |              now              
+---------------+-------------------------------
+ verify_at_utc | 2026-09-18 23:27:05.264593+00
+
+  ?column?   | count 
+-------------+-------
+ in_progress |     0
+
+     ?column?     | count 
+------------------+-------
+ kickoff_-4h_+15m |     1
+
+  ?column?  | count 
+------------+-------
+ nfl_60_100 |     0
+
+   ?column?    | id  | sport |  status   |        ko_ct        | home_team_id | away_team_id 
+---------------+-----+-------+-----------+---------------------+--------------+--------------
+ games_tonight | 461 | ncaaf | scheduled | 2026-09-18 18:35:00 |          154 |         2390
+ games_tonight | 472 | ncaaf | scheduled | 2026-09-18 19:00:00 |         2641 |          248
+ games_tonight | 550 | ncaaf | scheduled | 2026-09-18 21:30:00 |         2483 |         2502
+
+ ?column?  |         last_loop_at          | last_loop_ms | p95_loop_ms | loops | loops_skipped | last_error | executor_version 
+-----------+-------------------------------+--------------+-------------+-------+---------------+------------+------------------
+ heartbeat | 2026-09-18 23:26:12.913021+00 |        21865 |       32322 | 48774 |          6288 |            | 4.5
+
+ ?column? |     reason      |     sum     
+----------+-----------------+-------------
+ skips_1h | exec_capacity   | 2692.000000
+ skips_1h | book_dirty      | 1395.000000
+ skips_1h | fair_stale      |  448.000000
+ skips_1h | signal_rejected |   14.000000
+
+ ?column? | samples | over_15s | over_25s |  p95  |     max      
+----------+---------+----------+----------+-------+--------------
+ loops_1h |      47 |       47 |       29 | 32697 | 51527.000000
+
+       ?column?        |              ts               |    value     
+-----------------------+-------------------------------+--------------
+ loop_over_25s_samples | 2026-09-18 15:50:57.913144+00 | 53995.000000
+ loop_over_25s_samples | 2026-09-18 16:09:12.913317+00 | 50295.000000
+ loop_over_25s_samples | 2026-09-18 16:21:42.913073+00 | 35470.000000
+ loop_over_25s_samples | 2026-09-18 16:22:57.913027+00 | 26259.000000
+ loop_over_25s_samples | 2026-09-18 16:24:27.913399+00 | 25053.000000
+ loop_over_25s_samples | 2026-09-18 16:26:57.913149+00 | 25739.000000
+ loop_over_25s_samples | 2026-09-18 16:46:27.912973+00 | 28857.000000
+ loop_over_25s_samples | 2026-09-18 16:52:27.913177+00 | 47047.000000
+ loop_over_25s_samples | 2026-09-18 17:07:12.913034+00 | 42409.000000
+ loop_over_25s_samples | 2026-09-18 17:18:42.912998+00 | 27943.000000
+ loop_over_25s_samples | 2026-09-18 17:23:12.913256+00 | 55616.000000
+ loop_over_25s_samples | 2026-09-18 17:25:57.91286+00  | 25931.000000
+ loop_over_25s_samples | 2026-09-18 17:37:57.913247+00 | 46022.000000
+ loop_over_25s_samples | 2026-09-18 17:53:27.913288+00 | 39810.000000
+ loop_over_25s_samples | 2026-09-18 18:09:12.913096+00 | 29298.000000
+ loop_over_25s_samples | 2026-09-18 18:25:12.913289+00 | 48155.000000
+ loop_over_25s_samples | 2026-09-18 19:10:12.913146+00 | 57529.000000
+ loop_over_25s_samples | 2026-09-18 19:25:42.913318+00 | 29556.000000
+ loop_over_25s_samples | 2026-09-18 19:40:12.913013+00 | 45161.000000
+ loop_over_25s_samples | 2026-09-18 20:25:57.913227+00 | 45278.000000
+ loop_over_25s_samples | 2026-09-18 20:31:27.913615+00 | 45142.000000
+ loop_over_25s_samples | 2026-09-18 20:37:57.913239+00 | 26662.000000
+ loop_over_25s_samples | 2026-09-18 20:44:27.91325+00  | 25255.000000
+ loop_over_25s_samples | 2026-09-18 20:45:27.913296+00 | 27349.000000
+ loop_over_25s_samples | 2026-09-18 20:46:57.913012+00 | 29108.000000
+ loop_over_25s_samples | 2026-09-18 20:48:27.91307+00  | 27526.000000
+ loop_over_25s_samples | 2026-09-18 20:49:27.913071+00 | 29218.000000
+ loop_over_25s_samples | 2026-09-18 20:53:27.912954+00 | 25076.000000
+ loop_over_25s_samples | 2026-09-18 20:54:27.913176+00 | 26851.000000
+ loop_over_25s_samples | 2026-09-18 20:55:27.913362+00 | 30243.000000
+ loop_over_25s_samples | 2026-09-18 20:58:12.913268+00 | 26165.000000
+ loop_over_25s_samples | 2026-09-18 21:01:12.913034+00 | 26307.000000
+ loop_over_25s_samples | 2026-09-18 21:02:12.913323+00 | 28426.000000
+ loop_over_25s_samples | 2026-09-18 21:03:27.913055+00 | 36342.000000
+ loop_over_25s_samples | 2026-09-18 21:07:42.913121+00 | 32300.000000
+ loop_over_25s_samples | 2026-09-18 21:10:27.912956+00 | 26077.000000
+ loop_over_25s_samples | 2026-09-18 21:11:57.91308+00  | 28585.000000
+ loop_over_25s_samples | 2026-09-18 21:13:12.913207+00 | 30387.000000
+ loop_over_25s_samples | 2026-09-18 21:20:57.91334+00  | 25121.000000
+ loop_over_25s_samples | 2026-09-18 21:24:57.913227+00 | 25240.000000
+ loop_over_25s_samples | 2026-09-18 21:27:27.913007+00 | 26231.000000
+ loop_over_25s_samples | 2026-09-18 21:28:27.913121+00 | 29483.000000
+ loop_over_25s_samples | 2026-09-18 21:29:57.913161+00 | 31752.000000
+ loop_over_25s_samples | 2026-09-18 21:31:12.913233+00 | 25733.000000
+ loop_over_25s_samples | 2026-09-18 21:32:12.913137+00 | 26734.000000
+ loop_over_25s_samples | 2026-09-18 21:33:12.913276+00 | 29741.000000
+ loop_over_25s_samples | 2026-09-18 21:35:57.913069+00 | 25949.000000
+ loop_over_25s_samples | 2026-09-18 21:37:27.913296+00 | 27826.000000
+ loop_over_25s_samples | 2026-09-18 21:38:57.913789+00 | 25284.000000
+ loop_over_25s_samples | 2026-09-18 21:40:27.913354+00 | 26884.000000
+ loop_over_25s_samples | 2026-09-18 21:42:57.913165+00 | 25074.000000
+ loop_over_25s_samples | 2026-09-18 21:43:57.913037+00 | 28127.000000
+ loop_over_25s_samples | 2026-09-18 21:45:27.913063+00 | 29324.000000
+ loop_over_25s_samples | 2026-09-18 21:46:27.913017+00 | 31782.000000
+ loop_over_25s_samples | 2026-09-18 21:47:42.913043+00 | 30883.000000
+ loop_over_25s_samples | 2026-09-18 21:50:27.913264+00 | 32788.000000
+ loop_over_25s_samples | 2026-09-18 21:51:42.913126+00 | 26406.000000
+ loop_over_25s_samples | 2026-09-18 21:53:12.912931+00 | 29924.000000
+ loop_over_25s_samples | 2026-09-18 21:54:42.91311+00  | 27005.000000
+ loop_over_25s_samples | 2026-09-18 21:57:12.913065+00 | 25791.000000
+ loop_over_25s_samples | 2026-09-18 22:04:57.913314+00 | 25830.000000
+ loop_over_25s_samples | 2026-09-18 22:08:27.91316+00  | 31204.000000
+ loop_over_25s_samples | 2026-09-18 22:11:12.913244+00 | 27436.000000
+ loop_over_25s_samples | 2026-09-18 22:18:12.913031+00 | 36980.000000
+ loop_over_25s_samples | 2026-09-18 22:19:57.913033+00 | 26951.000000
+ loop_over_25s_samples | 2026-09-18 22:20:57.913137+00 | 36039.000000
+ loop_over_25s_samples | 2026-09-18 22:25:42.912908+00 | 27766.000000
+ loop_over_25s_samples | 2026-09-18 22:26:57.91302+00  | 29001.000000
+ loop_over_25s_samples | 2026-09-18 22:27:57.913179+00 | 31245.000000
+ loop_over_25s_samples | 2026-09-18 22:29:12.913071+00 | 30823.000000
+ loop_over_25s_samples | 2026-09-18 22:30:27.913263+00 | 30966.000000
+ loop_over_25s_samples | 2026-09-18 22:32:57.913017+00 | 25234.000000
+ loop_over_25s_samples | 2026-09-18 22:33:57.913145+00 | 25701.000000
+ loop_over_25s_samples | 2026-09-18 22:36:27.913321+00 | 40747.000000
+ loop_over_25s_samples | 2026-09-18 22:37:42.913032+00 | 26595.000000
+ loop_over_25s_samples | 2026-09-18 22:39:12.913079+00 | 26434.000000
+ loop_over_25s_samples | 2026-09-18 22:40:12.913192+00 | 29021.000000
+ loop_over_25s_samples | 2026-09-18 22:41:42.913485+00 | 32697.000000
+ loop_over_25s_samples | 2026-09-18 22:42:57.913087+00 | 29332.000000
+ loop_over_25s_samples | 2026-09-18 22:44:27.91324+00  | 29165.000000
+ loop_over_25s_samples | 2026-09-18 22:47:12.912982+00 | 27941.000000
+ loop_over_25s_samples | 2026-09-18 22:48:42.913149+00 | 25849.000000
+ loop_over_25s_samples | 2026-09-18 22:50:57.91293+00  | 26631.000000
+ loop_over_25s_samples | 2026-09-18 22:51:57.91332+00  | 29507.000000
+ loop_over_25s_samples | 2026-09-18 22:53:27.913119+00 | 25530.000000
+ loop_over_25s_samples | 2026-09-18 22:54:27.913301+00 | 30212.000000
+ loop_over_25s_samples | 2026-09-18 22:57:12.913271+00 | 25241.000000
+ loop_over_25s_samples | 2026-09-18 22:59:42.913375+00 | 27894.000000
+ loop_over_25s_samples | 2026-09-18 23:04:12.913399+00 | 25485.000000
+ loop_over_25s_samples | 2026-09-18 23:05:42.913197+00 | 25576.000000
+ loop_over_25s_samples | 2026-09-18 23:10:12.913167+00 | 30069.000000
+ loop_over_25s_samples | 2026-09-18 23:17:57.91328+00  | 25170.000000
+ loop_over_25s_samples | 2026-09-18 23:18:57.913247+00 | 29640.000000
+ loop_over_25s_samples | 2026-09-18 23:20:27.913399+00 | 51527.000000
+ loop_over_25s_samples | 2026-09-18 23:23:12.913177+00 | 32322.000000
+ loop_over_25s_samples | 2026-09-18 23:24:27.91331+00  | 27954.000000
+ loop_over_25s_samples | 2026-09-18 23:25:27.913032+00 | 30472.000000
+
+  ?column?  |              ts               |    value     
+------------+-------------------------------+--------------
+ nw_pending | 2026-09-18 23:25:27.913032+00 | 29496.000000
+ nw_pending | 2026-09-18 23:24:27.91331+00  | 29496.000000
+ nw_pending | 2026-09-18 23:23:12.913177+00 | 29495.000000
+
+    ?column?    | count 
+----------------+-------
+ nw_past_expiry |     0
+
+  ?column?   | status | count 
+-------------+--------+-------
+ open_orders | open   |   150
+
+   ?column?    |              ts               |   value   
+---------------+-------------------------------+-----------
+ dirty_markets | 2026-09-18 23:25:27.913032+00 | 54.000000
+
+ ?column?  | count |   sum    | max  
+-----------+-------+----------+------
+ 6b1_fills |  1878 | 70557.76 | 1878
+
+  ?column?  |  sum  |    sum     |   sum   |     sum     |     sum      
+------------+-------+------------+---------+-------------+--------------
+ 6b1_orders | 38.92 | 1557550170 | 1529.92 | 11006049.45 | 154403731.18
+
+  ?column?  | count |  sum  | max 
+------------+-------+-------+-----
+ 6b1_ledger |     4 | 77.84 |   4
+
+       ?column?       | count 
+----------------------+-------
+ 6b2_post_expiry_fill |     0
+
+        ?column?         | count |            min            |            max             
+-------------------------+-------+---------------------------+----------------------------
+ 6b2_post_boundary_fills |  1906 | 2026-09-15 15:05:49.77+00 | 2026-09-18 21:33:13.695+00
+
+      ?column?      | count 
+--------------------+-------
+ 6b3_rejected_place |     0
+
+     ?column?      | count 
+-------------------+-------
+ 6b3_skips_written |   320
+
+      ?column?      | count 
+--------------------+-------
+ 6b4_no_print_fills |     0
+
+ ?column? | id | filled_contracts | hitting_volume 
+----------+----+------------------+----------------
+
+   ?column?   | count 
+--------------+-------
+ 6b4_sample_n |     2
+
+    ?column?     | count 
+-----------------+-------
+ 6b5_dirty_scope |     0
+
+  ?column?   | count 
+-------------+-------
+ 6b5_backoff |     0
+
+      ?column?      |      t      | count 
+--------------------+-------------+-------
+ 6b5_open_intervals | dirty       |    26
+ 6b5_open_intervals | observation |   172
+
+    ?column?     |   cause   | count 
+-----------------+-----------+-------
+ 6b_bycause_open | event_age |    55
+ 6b_bycause_open | gap       |     1
+
+    ?column?    |      cause       | count 
+----------------+------------------+-------
+ 6b_bycause_24h | event_age        | 19852
+ 6b_bycause_24h | gap              |   561
+ 6b_bycause_24h | recorder_dead    |    78
+ 6b_bycause_24h | session_boundary |    62
+
+ ?column? |                          criteria_hash                           |         evaluated_at          | gate_variant 
+----------+------------------------------------------------------------------+-------------------------------+--------------
+ 6b8_gate | 5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-15 05:41:09.998648+00 | t
+ 6b8_gate | 5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-15 05:41:09.998648+00 | f
+ 6b8_gate | 5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-15 05:41:09.998648+00 | f
+
+    ?column?     | count 
+-----------------+-------
+ 6b8_eligibility |     0
+
+    ?column?    |       hour_ct       | count |   sum   | queue_model 
+----------------+---------------------+-------+---------+-------------
+ fills_per_hour | 2026-09-17 15:00:00 |     4 |  226.18 |           0
+ fills_per_hour | 2026-09-17 16:00:00 |    28 |  118.21 |           0
+ fills_per_hour | 2026-09-17 17:00:00 |     6 |  475.68 |           0
+ fills_per_hour | 2026-09-17 18:00:00 |     2 |    2.00 |           0
+ fills_per_hour | 2026-09-17 19:00:00 |     2 |   40.20 |           0
+ fills_per_hour | 2026-09-17 20:00:00 |     2 |  115.80 |           0
+ fills_per_hour | 2026-09-17 23:00:00 |     2 |    2.00 |           0
+ fills_per_hour | 2026-09-18 04:00:00 |    25 | 1948.67 |           0
+ fills_per_hour | 2026-09-18 06:00:00 |    42 |  351.33 |           0
+ fills_per_hour | 2026-09-18 08:00:00 |     3 |   14.35 |           0
+ fills_per_hour | 2026-09-18 09:00:00 |     2 |   50.00 |           0
+ fills_per_hour | 2026-09-18 10:00:00 |     7 |   97.22 |           0
+ fills_per_hour | 2026-09-18 11:00:00 |    52 | 4945.22 |           0
+ fills_per_hour | 2026-09-18 12:00:00 |     6 |   50.90 |           0
+ fills_per_hour | 2026-09-18 16:00:00 |     2 |    7.08 |           0
+
+  ?column?   | count | max  |            max             
+-------------+-------+------+----------------------------
+ fills_total |  3784 | 3784 | 2026-09-18 21:33:13.695+00
+
+     ?column?      | nw_dirty_s | rows_with_dirty 
+-------------------+------------+-----------------
+ dirty_accrual_24h | 1429894035 |           29134
+
+      ?column?       | count |   elapsed_s    
+---------------------+-------+----------------
+ dirty_intervals_24h | 20553 | 4261993.577726
+
+    ?column?    | mean_loop_ms | count 
+----------------+--------------+-------
+ loop_period_1h |        26281 |    48
+
+  ?column?   |  variant_id  |        ?column?        
+-------------+--------------+------------------------
+ 6d_coverage | 49af716f8708 | 0.71497785850815020598
+ 6d_coverage | 5632da729fa7 | 0.71497785850815020598
+ 6d_coverage | 64ba3ef09642 | 0.71497785850815020598
+ 6d_coverage | c2bc45377328 | 0.71497785850815020598
+ 6d_coverage | e549e693e117 | 0.71497785850815020598
+ 6d_coverage | f259ca109084 | 0.71497785850815020598
+ 6d_coverage | ff363c8ac08d | 0.71497785850815020598
+
+   ?column?   | run_id | sport | ttk_bucket |   feed   | market_type |  variant_id  |              ts               
+--------------+--------+-------+------------+----------+-------------+--------------+-------------------------------
+ 6d_omissions |  24413 | nfl   | gt36h      | featured | moneyline   | 5632da729fa7 | 2026-09-18 01:16:35.655986+00
+ 6d_omissions |  24413 | nfl   | lt20m      | featured | moneyline   | 5632da729fa7 | 2026-09-18 01:16:35.655986+00
+ 6d_omissions |  24413 | ncaaf | gt36h      | featured | moneyline   | 5632da729fa7 | 2026-09-18 01:16:35.655986+00
+ 6d_omissions |  24413 |       |            |          |             | 5632da729fa7 | 2026-09-18 01:16:35.655986+00
+ 6d_omissions |  24413 | ncaaf | 3h_36h     | featured | moneyline   | 5632da729fa7 | 2026-09-18 01:16:35.655986+00
+ 6d_omissions |  24413 | ncaaf | lt20m      | featured | moneyline   | 5632da729fa7 | 2026-09-18 01:16:35.655986+00
+ 6d_omissions |  24413 | ncaaf | 3h_36h     | featured | spread      | 5632da729fa7 | 2026-09-18 01:16:35.655986+00
+ 6d_omissions |  24413 | ncaaf | 3h_36h     |          | spread      | 5632da729fa7 | 2026-09-18 01:16:35.655986+00
+ 6d_omissions |  24413 | ncaaf | 3h_36h     |          | total       | 5632da729fa7 | 2026-09-18 01:16:35.655986+00
+ 6d_omissions |  24413 | ncaaf | 3h_36h     | featured | total       | 5632da729fa7 | 2026-09-18 01:16:35.655986+00
+ 6d_omissions |  24413 | ncaaf | gt36h      | featured | spread      | 5632da729fa7 | 2026-09-18 01:16:35.655986+00
+ 6d_omissions |  24413 | ncaaf | gt36h      | featured | total       | 5632da729fa7 | 2026-09-18 01:16:35.655986+00
+ 6d_omissions |  24413 | nfl   | gt36h      | featured | spread      | 5632da729fa7 | 2026-09-18 01:16:35.655986+00
+ 6d_omissions |  24413 | nfl   | gt36h      | featured | total       | 5632da729fa7 | 2026-09-18 01:16:35.655986+00
+ 6d_omissions |  24413 | nfl   | gt36h      | featured | moneyline   | f259ca109084 | 2026-09-18 01:16:35.655986+00
+ 6d_omissions |  24413 | nfl   | lt20m      | featured | moneyline   | f259ca109084 | 2026-09-18 01:16:35.655986+00
+ 6d_omissions |  24413 | ncaaf | gt36h      | featured | moneyline   | f259ca109084 | 2026-09-18 01:16:35.655986+00
+ 6d_omissions |  24413 |       |            |          |             | f259ca109084 | 2026-09-18 01:16:35.655986+00
+ 6d_omissions |  24413 | ncaaf | 3h_36h     | featured | moneyline   | f259ca109084 | 2026-09-18 01:16:35.655986+00
+ 6d_omissions |  24413 | ncaaf | lt20m      | featured | moneyline   | f259ca109084 | 2026-09-18 01:16:35.655986+00
+
+      ?column?       | count 
+---------------------+-------
+ 6d_unknown_outcomes |     0
+
+  ?column?   |      outcome       | count 
+-------------+--------------------+-------
+ 6d_outcomes | cadence_none       |  6712
+ 6d_outcomes | completed          | 22910
+ 6d_outcomes | no_fair            |  1715
+ 6d_outcomes | not_due            | 50122
+ 6d_outcomes | scheduled          | 23039
+ 6d_outcomes | skipped_alternates |     8
+ 6d_outcomes | skipped_ladders    |    11
+ 6d_outcomes | skipped_trades     |     2
+
+    ?column?    | outcome |   sum   
+----------------+---------+---------
+ 6d_missingness | no_fair | 1650768
+
+ ?column? | count 
+----------+-------
+ 6d_fix48 |     0
+
+    ?column?    | ?column? 
+----------------+----------
+ 6d_stage_costs | {}
+
+  ?column?   | opp_episodes | intent_episodes 
+-------------+--------------+-----------------
+ 6d_episodes |         6545 |           13204
+
+ ?column?  |           check_name           | status |              ts               |   value    
+-----------+--------------------------------+--------+-------------------------------+------------
+ 6d_checks | duplicate_trades               | pass   | 2026-09-18 09:03:58.971644+00 |   0.000000
+ 6d_checks | fair_values_negative_feed_lag  | pass   | 2026-09-18 09:03:58.971644+00 |   0.000000
+ 6d_checks | fair_values_negative_staleness | pass   | 2026-09-18 09:03:58.971644+00 |   0.000000
+ 6d_checks | intents_without_order_or_skip  | fail   | 2026-09-18 09:03:58.971644+00 | 530.000000
+
+           ?column?            | count 
+-------------------------------+-------
+ 6d_ix_intents_created_invalid |     0
+
+  ?column?   |                                               string_agg                                                | count 
+-------------+---------------------------------------------------------------------------------------------------------+-------
+ 6d_variants | 49af716f8708,5632da729fa7,64ba3ef09642,c2bc45377328,e549e693e117,e82fcd0a1e99,f259ca109084,ff363c8ac08d |     8
+
+     ?column?     |          name           |              max              | age_s 
+------------------+-------------------------+-------------------------------+-------
+ 6d_latency_alive | exec.fair_age_s         | 2026-09-18 23:27:42.913022+00 |    62
+ 6d_latency_alive | exec.signal_to_order_ms | 2026-09-18 23:24:27.91331+00  |   257
+ 6d_latency_alive | normalize.backlog_age_s | 2026-09-18 22:23:57.764468+00 |  3887
+ 6d_latency_alive | normalize.backlog_ids   | 2026-09-18 23:26:57.754401+00 |   107
+ 6d_latency_alive | pricing.feed_lag_s      | 2026-09-18 23:25:27.754375+00 |   197
+ 6d_latency_alive | recorder.phase_ms       | 2026-09-18 23:26:57.754401+00 |   107
+ 6d_latency_alive | ws.tape_covered_frac    | 2026-09-18 23:00:27.754325+00 |  1697
+
+      ?column?       | count 
+---------------------+-------
+ 6d_negative_samples |     0
+
+    ?column?    | ?column? 
+----------------+----------
+ 6d_coverage_mb |       52
+
+     ?column?      |       relname        | n_live_tup | n_dead_tup 
+-------------------+----------------------+------------+------------
+ 6d_episode_tables | opportunity_episodes |      11680 |        698
+ 6d_episode_tables | intent_episodes      |      67568 |      10865
+
+ ?column? |       version_num        
+----------+--------------------------
+ alembic  | 0013_nw_executor_version
+
+   ?column?   | ?column? |                                                                                                                                              ?column?                                                                                                                                              
+--------------+----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ pulse_status | BROKEN   | [{"name": "check_fail", "unit": "count", "level": "broken", "value": 1, "threshold": 0}, {"name": "snapshot_budget", "unit": "count", "level": "watch", "value": 4311.0, "threshold": 250.0}, {"name": "research_budget", "unit": "count", "level": "watch", "value": 24.5576, "threshold": 25.0}]
+
+     ?column?      | count 
+-------------------+-------
+ snapshot_disabled |     0
+
+     ?column?     |           m            |     sum     
+------------------+------------------------+-------------
+ snapshot_cpu_top | 2026-09-18 23:18:00+00 | 4431.000000
+ snapshot_cpu_top | 2026-09-18 22:29:00+00 | 2870.000000
+ snapshot_cpu_top | 2026-09-18 23:23:00+00 | 2638.000000
+
+ ?column?  | percentile_disc 
+-----------+-----------------
+ floor_p95 |     2535.000000
+
+     ?column?      | corrections | rows | min | max 
+-------------------+-------------+------+-----+-----
+ t18b_stat_rows_8h |           0 |    0 |     | 
+
+ ?column? | player_id | stat | rows | mean_gap_s | max_gap_s 
+----------+-----------+------+------+------------+-----------
+
+ ?column? | status | count 
+----------+--------+-------
+
+     ?column?      |        key         | credits_used |        last_fetched_at        
+-------------------+--------------------+--------------+-------------------------------
+ t18b_source_state | odds_props:2026-09 |         2675 | 2026-09-18 20:24:27.754484+00
+ t18b_source_state | odds_props         |              | 2026-09-18 20:24:27.754484+00
+ t18b_source_state | parlay_reprice     |              | 2026-09-18 20:24:27.754484+00
+
+
+## verify-summary (make verify-summary-omarchy DEPLOY_SHA=4066197, 18:27 CT)
+PASS build: page 4066197 vs deploy 4066197
+PASS sections: no section errors
+FAIL page_time: / 3.1s, /api/summary 20.7s
+PASS run_id: page 26463 vs sql 26463
+PASS ws_last_event: page age 7s vs sql 1s
+PASS candidates_24h: every active variant within 5 % (or 20 rows) of SQL
+PASS kill_switch: active=False
+PASS credits_numeric: credits=4847286
+PASS data_quality_shape: section rendered (empty is allowed in quiet hours)
+
+## query 4 after half (18:25 CT) is appended to reports/2026-09-19-lagging-close-question.md
