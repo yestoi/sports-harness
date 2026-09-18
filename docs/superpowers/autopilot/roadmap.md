@@ -26,8 +26,9 @@ section F holds the binding decisions and rulings.
 | 6B Repair execution: subscription continuity, recovery anchoring, trade/delta reconciliation, expiry, rejection, dirty-time scope, capacity-equivalent replay; the order 157 audit | **done** (planned 2026-09-11 21:41 CT, journal 131; started 2026-09-12 00:40 CT, journal 137; merged to main 2026-09-14 21:22 CT at 61013dd, journal 216; ledger `docs/superpowers/reviews/2026-09-11-phase6b-sdd-ledger.md`; order 157 audit **unverifiable**; the release and the D11 fill follow) | `docs/superpowers/plans/2026-09-11-phase6b-repair-execution.md` (spec: `docs/superpowers/specs/2026-09-11-phase6b-repair-execution-design.md`) | 6A done (met, journal 129); execution starts after tonight's wave deploy and 6C's merge, within the implementer ceiling |
 | 6C Trustworthy reports: Chicago week keys on every surface and reader (fix 33 widened), gate documentation and eligibility, confirmation floor, exact-contract joins, funnel units, prior-week annotation backlog (after fix 41) | **planned** (2026-09-11 14:36 CT, journal 120; all 11 tasks merged to main at 6c11df3 and deployed b0a3991 23:22 CT, journal 132; stays planned until the wave-2 verify rows pass on Omarchy; the 6D deferral of the two funnel units (unique candidate opportunities, distinct intent episodes) was accepted by the user 2026-09-14, journal 184, and 6C's closure entry must name both as delivered by 6D) | `docs/superpowers/plans/2026-09-11-phase6c-trustworthy-reports.md` (spec: `docs/superpowers/specs/2026-09-11-phase6c-trustworthy-reports-design.md`) | none: plan and execute the deadline slice alongside 6A/6B; do not wait for all of 6B. Week keys by Sun 2026-09-13 19:00 CT, diagnostic report before Mon 2026-09-14 09:00 CT; final repaired-fill reports need 6B; the slice alone does not complete 6C |
 | 6D Sustained evaluation: scheduled-versus-completed instrumentation, budget isolation, an explicit holding/capacity policy, the coverage contract | **in progress** (started 2026-09-14 05:2x CT, journal 186; branch `phase6d-sustained-evaluation`; merged to main at ffbecd5 and **released as b69b880 2026-09-15 01:25 CT**, journal 221; acceptance rows deferred to the first game window / 04:00 CT sweep; the policy comparison is the user's adoption decision) | plan-next (§6D) | instrumentation none; the policy comparison needs 6B |
+| 6D.1 Execution viability experiment: stateful policy comparison, observation/holding tradeoff, book-health diagnosis, independent veto pacing, feasibility forecast | **not planned** (scope adopted 2026-09-18, U10; draft design and delivery outline are inputs to plan-next; required reviews pending) | `docs/superpowers/plans/2026-09-18-phase6d1-execution-viability.md` (spec: `docs/superpowers/specs/2026-09-18-phase6d1-execution-viability-design.md`) | isolated implementation and bounded reads authorized; historical runs need 6B inputs and baseline proof; prospective activation needs a frozen manifest, budget/coverage preflight and existing release rules; production holding-policy adoption remains the user's dated decision |
 | 6E Operating environment: inventory, complete restore rehearsal, corrected-workload benchmark, host choice, measured cutover (fix 34 self-guard) | **partially delivered; acceptance pending** (Omarchy inventory/restore/cutover recorded2026-09-12; corrected6B workload and original operational acceptance remain; **cold-start/reboot observation: the Tue 2026-09-15 07:00 CT slot was missed (the 06:35 CT wakeup never fired and no reminder file existed, journal 223); the user reschedules it**, same procedure as journal 203: checkpoint, clean stack stop, the controller session dies with the reboot, relaunch per Kickoff, cold-start evidence at the new session's preflight); **cold-start observed 2026-09-15 07:43 CT, PASS (journal 229): boot to first healthy tick 1 min 55 s, unattended from the path unit; notes: app-backup is SIGKILLed at a stop (no SIGTERM handling), a clean stop writes no `gap` row (the `ws_connect` event is the boundary)** | plan-next (§6E) | inventory and rehearsal none; the benchmark needs 6B and 6A's deploy plumbing; the cutover itself is the user's yes |
-| 6F Valid prospective period: recorded version boundary, first healthy-weekend checkpoint, sample-accrual forecast, revised selection/confirmation dates | not planned | plan-next (§6F) | 6B; 6C's numeric and eligibility rows; 6D's declared policy; 6E's environment acceptance |
+| 6F Valid prospective period: recorded version boundary, first healthy-weekend checkpoint, sample-accrual forecast, revised selection/confirmation dates | not planned; diagnostic forecast brought forward into 6D.1 (U10) | plan-next (§6F) | 6B; 6C's numeric and eligibility rows; 6D's declared policy plus 6D.1's decision report and any required policy-adoption decision; 6E's environment acceptance |
 | 7 Expand only with a working baseline: new variants and optional hypotheses from repaired research evidence | not planned | plan-next | 6F's operational checkpoint |
 | Operator mode | after phase 6, and calendar duties throughout | n/a | n/a |
 | Go-live gate | n/a | n/a | user's legal decision plus a stored passing gate report; never autonomous |
@@ -82,6 +83,30 @@ user decision changes them.
 | U6 Dashboard | Decided 2026-09-07 (design session, spec `docs/superpowers/specs/2026-09-07-dashboard-surfaces-design.md`). Architecture: compute once, render in the browser: jobs write pre-aggregated snapshots, `app-serve` serves them by primary key, a static client renders four surfaces (Pulse, Floor, Study, Gate) under `/ui/`; the legacy page at `/` and the `/api/summary` contract are frozen. Telemetry tables that cannot be backfilled land in phase 3 as **Task 12b** (`metric_samples`, `operator_events`, `order_watch_samples`, `equity_snapshots`, `game_score_events`, `check_results`, `report_runs`/`report_cells`); the front end is **phase 4.5**, planned after phase 4, absorbing phase 5(g). Mobile and desktop both in scope. Visual direction comes from a Claude Design canvas, refined on or after 2026-09-14. |
 | U8 Phase 6 direction and resume setup | Integration requested 2026-09-11 (journal 113, recorded 12:08 CT): "I have a working loop setup in this project I'd like to get this roadmap integrated into." The adopted `docs/superpowers/reviews/2026-09-11-phase6-roadmap/ROADMAP.md` replaces phase 6's feature-first order with milestones 6A-6F and 7; its reconciliation, evidence and hashes remain the preserved review record. Resume correction authorized 2026-09-11: "Lets correct the resume instructions and get me ready to run /autopilot." The setup choices below implement that request, including 6C's parallel deadline slice, fix 37 before dependent deployments, and two 6B design-review lenses; those reviewer choices were not requirements in the original review roadmap. The roadmap adds no deploy trigger: standing authorization and R4 still govern deployment, and changing the recording host still requires the user's yes. Do not begin by relaxing freshness or adding a fill-producing variant; do not remove gate criteria or relax sample thresholds. September 14 is diagnostic. R7's September 21 selection and September 28 confirmation dates are overridden: no formal selection or confirmation until a replacement dated pre-registration amendment is ratified by the user. 6F proposes dates and any extension rule from operational completeness and sample accrual before examining confirmatory estimates. Chicago ISO-week reporting continues; R1's authority rule, the H1 floor, gate criteria, thresholds, families, cell grids and frozen variant ids remain in force. Order 157 requires a tape audit until 6A/6B publish validated, corrected or unverifiable. |
 | U9 Fun tickets UI revision | Decided 2026-09-13 (design session, then the PR review session). User, verbatim, 2026-09-13 morning: "I have two PRs to review and merge. After I would like to get the autopilot loop ready to tackle the rest of our roadmap and add the new dashboard work to it." The approved design is PR #1, merged as `docs/superpowers/design/ui-revision-2026-09-12/` (Fable spec `fable/DESIGN-SPEC.md`, decisions F01–F09; PRODUCT-BRIEF U01–U14 stand). Phase **4.6** carries it. It is a **parallel track**: the loop may plan 4.6 at its next plan-next opportunity and run its tasks while 6B's remaining tasks (T5–T12, final review), the 6C deadline duties and actionable hotfixes continue; those keep priority for the implementer ceiling and the suite slot, and 6D's instrumentation may still be planned alongside. Three standing dashboard rules are widened by the design and are recorded here so the loop does not treat them as scope beyond the roadmap: loopback-only becomes loopback plus one home-network HTTPS listener behind an owner login (never public or remote; **amended by the user 2026-09-16, journal 260**: the loopback dashboard is also published at `https://sports.tunderwood.com` through the Hetzner gateway behind Authelia, via the socat user unit `sports-gateway-forward` on `10.1.0.3:8180`; runbook `docs/runbooks/sports-gateway.md`; the loop does not change the gateway, the unit or the ufw rule); UI read-only except the kill pair becomes read-only plus two owner POST routes (`/api/parlay/placed`, `/api/parlay/correct`); game-line-only legs become game lines plus the named prop families. Stakes, the $50 week, the LSU/Saints anchors, the paper posture, the scientific criteria and every invariant below are unchanged; fun-ticket accounting stays separate from paper (F02). PR #2 (the Qwen adoption review package) was merged the same morning as a review record only: no Qwen route, budget, skill edit or activation follows from it; D1–D6 await the user. |
+
+### U10: execution viability milestone (user-directed, 2026-09-18)
+
+User, verbatim: "Ok, lets apply the recommendation. Should this be separate from the existing code? Should it be it's own milestone?"
+
+Apply the [confirmed review](reports/2026-09-18-fill-starvation-review-confirmed.md) as **6D.1**, a separate
+milestone in this repo using shared algorithms and isolated state. The adopted
+[draft design](../specs/2026-09-18-phase6d1-execution-viability-design.md) and
+[delivery outline](../plans/2026-09-18-phase6d1-execution-viability.md) are plan-next inputs. Scope:
+stateful baseline/cadence comparison, bounded faster observations, book-health diagnosis, independent
+veto pacing and accrual forecast; conclude retain/revise/stop/insufficient. Positive performance is not
+required. Existing `policy-compare` cannot establish alternative-fill performance.
+
+Resume correction (user's sequencing question, journal 289): after recovery/preflight and applicable
+Orient 0-4 duties, prioritize **6D.1 plan-next**, then its ready phase tasks. This explicitly overrides
+Orient 5/6's first-phase ordering under U8. Complete standard design/conformance/plan reviews, bind
+task `Files:`/`Depends on:` and final verification, commit the reviewed plan and set `planned` before T1.
+While waiting on review/data/dependencies, continue other ready work. Existing milestone acceptance,
+recording, timed verification, coverage, expiry-backlog and storage duties retain priority when due;
+file ownership and ceilings stand. Bounded implementation and isolated paper work are authorized;
+activation needs the manifest and budget/coverage checks. Adoption, registration, confirmation, spend
+and release rules are unchanged. The study is exploratory; the formal prospective period remains 6F.
+
+### Controller rulings
 
 Controller rulings this file governs. Each is reversible; the review states the cost if wrong.
 
@@ -402,10 +427,14 @@ verification and recovery. Recheck R4 at deploy;
 the deadline creates no exception. If that window is at risk, urgent 6C planning takes priority. If no safe
 window remains, prepare the explicit-period diagnostic report and affected-surface labels. Completing this
 slice does not mark 6C done; all its acceptance work must finish.
-6D's instrumentation can start any time, its policy comparison after 6B. 6E's inventory and restore rehearsal
+6D's instrumentation can start any time, its policy comparison after 6B. U10 adds 6D.1's stateful comparison,
+book-health investigation and independent veto pacing as the next development priority: plan-next's
+required reviews first, then T1 and its dependencies, per U10's explicit Orient 5/6 exception. 6D's
+current comparison cannot substitute for that evidence. 6E's inventory and restore rehearsal
 can proceed alongside 6B, its
 benchmark after 6B and 6A's deploy plumbing. 6F only when 6B, 6C's numeric and eligibility rows, 6D's declared
-policy and 6E's environment acceptance are done; optional annotation and the migration itself are not
+policy, 6D.1's decision report (and any required holding-policy adoption), and 6E's environment acceptance
+are done; optional annotation and the migration itself are not
 prerequisites, and the NAS satisfies the environment requirement if it passes representative corrected-workload
 checks. 7 after 6F's operational checkpoint. The concrete first task: the copied-tape evidence capsule, the
 sequence/recovery/queue failures as executable regressions, and 6B behind a versioned correction manifest.
@@ -487,7 +516,11 @@ Pre-loaded decisions, one per milestone:
    its prospective period. Acceptance is the coverage contract declared before the run: every scheduled eligible
    primary/gate evaluation completes inside its freshness window or leaves an explicit reason and interval, zero
    unexplained omissions; documented missingness is quantified and its tolerance agreed before inference. Reduced
-   order churn alone is not acceptance.
+   order churn alone is not acceptance. **U10 follow-on, 6D.1:** the stateful experiment, independent veto
+   pacing, book-health diagnosis and diagnostic forecast are a separate milestone, governed by
+   `docs/superpowers/specs/2026-09-18-phase6d1-execution-viability-design.md`; its completion evidence and
+   retain/revise/stop/insufficient decision precede 6F. Existing 6D acceptance is not reopened or expanded
+   by this follow-on.
 5. **6E.** Preparation alongside 6B-6D. The user records the Mac mini's chip, RAM, free SSD space,
    container-runtime allocation and intended unattended operation (User-side TODO); nothing is purchased or
    required on the strength of the other review's unverified prices or latency figures. The benchmark uses the
@@ -509,8 +542,9 @@ Pre-loaded decisions, one per milestone:
    handled, timely primary/gate evaluation, completed markout and report work, fresh required surfaces, one
    backup and one cold-start observation, refreshed growth and free-space projections (a retained NAS copy frees
    nothing). The storage and retention proposal is written now from measured growth; no deletion (U3).
-6. **6F.** Start once 6B, 6C's numeric and eligibility rows, 6D's declared policy and 6E's environment acceptance
-   are in; record a version boundary; the earlier period stays as diagnostic evidence with measurement-specific
+6. **6F.** Start once 6B, 6C's numeric and eligibility rows, 6D's declared policy, 6D.1's decision report
+   and any required policy adoption (U10), and 6E's environment acceptance are in; record a version boundary;
+   the earlier period stays as diagnostic evidence with measurement-specific
    eligibility (no blanket reset, no discarded adverse observation, no claim that every old snapshot is invalid).
    At the first complete healthy football weekend, per variant: eligible market and game coverage, clean
    executable resting hours, unique order episodes, actual queue-filled orders, independent filled games, mature

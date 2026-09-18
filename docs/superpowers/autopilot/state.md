@@ -1,10 +1,21 @@
 # Autopilot checkpoint
 
-Updated 2026-09-18 12:40 CT (17:40 UTC) by controller session sports-ed in `/home/trey/dev/sports` on Omarchy. Last journal entry: 287. Paper-only. Runtime build: **4066197** (journal 273, app-only 07:23 CT Sep 18, fix 79 print cache; 747791c full 10:04 CT Sep 16; app-ws on 747791c). Main is ahead of the runtime by fix 85 (migration 0014, 4d2cdcc), 6D Task 11 (0fe5890) and fix 87 (8681b74): **the release is gated (journal 284)**: app-only is refused by classification while fix 85's files sit on main; fix 85 is held for Monday's quiet-window full release by ruling 2026-09-18b §1; the user chooses (packet item 24). Rollback: app-only redeploy of 1a12781.
+Updated 2026-09-18 13:14 CT (18:14 UTC, clock read 13:14:15) by the user-directed Codex setup session in `/home/trey/dev/sports` on Omarchy; controller remains stopped. Last journal entry: 289. Paper-only. Runtime build: **4066197** (journal 273, app-only 07:23 CT Sep 18, fix 79 print cache; 747791c full 10:04 CT Sep 16; app-ws on 747791c). Main is ahead of the runtime by fix 85 (migration 0014, 4d2cdcc), 6D Task 11 (0fe5890) and fix 87 (8681b74): **the release is gated (journal 284)**: app-only is refused by classification while fix 85's files sit on main; fix 85 is held for Monday's quiet-window full release by ruling 2026-09-18b §1; the user chooses (packet item 24). Rollback: app-only redeploy of 1a12781.
+
+## Resume first
+
+U10 adopts **6D.1 Execution viability experiment** in this repo, with shared algorithms and isolated experiment state. Read `docs/superpowers/specs/2026-09-18-phase6d1-execution-viability-design.md`, `docs/superpowers/plans/2026-09-18-phase6d1-execution-viability.md`, and `reports/2026-09-18-fill-starvation-review-confirmed.md`. These are adopted scope, a draft design and a delivery outline; the required design/conformance/plan reviews have not happened. Status is `not planned`. After recovery/preflight and applicable Orient 0-4 duties, select **plan-next for 6D.1** ahead of other development under the explicit U10 scheduling exception. Commit the reviewed plan and set `planned` before T1; then prioritize its ready tasks. Existing 4.6/6C/6D/6E acceptance remains active. While 6D.1 waits, continue other ready work.
+
+No runtime code, collector, veto change or policy adoption has shipped from this setup. The current `policy-compare` does not simulate alternative fills and cannot establish holding-policy viability. Veto pacing is independent work inside 6D.1. The user's approval covers bounded implementation and isolated paper work; prospective activation still needs the manifest, budget/coverage checks and existing release rules. Production adoption and 6F's confirmation dates keep their existing decision boundaries. Journal 289 corrects entry 288's direct-to-T1 handoff.
+
+Startup validation: context.py check and the full autopilot test suite pass. The worker configuration test now recognizes the controller's already-approved Graft connector (286) and still asserts the exact two-tool worker allowlist. No MCP or worker permissions changed.
+
+The review, `evidence/2026-09-18-fill-review-*`, source packet/evidence, milestone drafts and routing changes belong to this scoped setup commit. The pre-existing untracked `docs/superpowers/.gitignore` and `.ignore` are Graft cache/search rules; this session inspected them but did not change or adopt them. Preserve them and reconcile ownership before a release, whose planner requires clean porcelain; they do not prevent plan-next. No broad `git add` or deletion of another session's files. No controller was launched. Remove this section after consuming it, retaining decisions in the resume entry and active plan/ledger pointers below per recovery.md.
 
 ## Right now
 
-- **Session stop at the user's request (12:0x CT Sep 18, journal 287)**: the controller session sports-ed ended its pass after fix 87 merged; the user relaunches per Kickoff. The new session must re-arm the 17:55 and 18:25 CT wakeups (the old session's crons died with it; durable reminders 2026091803 and 2026091802 remain).
+- **6D.1 adopted (U10, 288-289)**: plan-next, then reviewed implementation; see Resume first.
+- **Session sports-ed stopped at the user's request after fix 87 merged (287)**: relaunch per Kickoff; re-arm wakeups in Pending results.
 - **Gate (journal 284, report `reports/2026-09-18-stopped-1105.md`)**: Task 11's release. Options: (1) fold into Monday's full release [recommended], (2) fix 85's full release moved to Saturday's quiet window 01:30-10:15 CT with §1's preconditions, (3) the same today before 18:15 CT. No release until the user answers; every other unit continues. Fix 87 rides the same release.
 - **Fix 87 done (journal 287)**: an exhausted tick closes every scheduled coverage cell; sonnet impl, opus review CHANGES REQUIRED then APPROVED WITH MINORS; 4,242 passed at 8681b74; merged 12:39 CT. Judge-after: 6D row 2 reads 0 on the next `budget_exhausted` run after the release.
 - **Task 11 done (journal 283)**: cell facts populated at enumeration; merged 0fe5890 11:03 CT; judge-after SQL (plan step 3) after whichever release ships.
@@ -17,12 +28,14 @@ Updated 2026-09-18 12:40 CT (17:40 UTC) by controller session sports-ed in `/hom
 
 ## Order of work
 
-1. Fri 2026-09-18: design-86 query 4 ~17:55 CT (before half + the frozen-cursor query, journal 281); 18:25 CT after-window read (fills AFTER half with the 07:23 CT release instant, 6B §3, 6D rows, coverage waived, deferred rows scored; no row 2 granularity note: Task 11 not shipped). Release per the user's item 24 answer. No open hotfix row is actionable (79/86 wait on the user, 85/87 on the release).
-2. Verify after each release: journal 219's deferred rows, item 12, item 16, rows 49/68, the 6B by-cause row, Watch reads (56, 70); Task 11's and fix 87's judge-after; `exec.phase_place_ms` per `exec.placed` after fix 85.
-3. Operate: storage retention proposal (`reports/2026-09-15-storage-retention-proposal.md`; the user decides by 2026-09-22). Friday alias pass done (journal 285); the next pass is Monday 09:30 CT. 6D acceptance rows and 4.6 T18b/T19 wait for game windows. Usage.py measurement is the user's (journal 247).
+1. Development priority: **6D.1 plan-next**, then T1 after the reviewed plan is committed. Applicable Orient 0-4 duties take precedence; release holds do not block isolated development (U10).
+2. Fri 2026-09-18: design-86 query 4 ~17:55 CT (before half + the frozen-cursor query, journal 281); 18:25 CT after-window read (fills AFTER half with the 07:23 CT release instant, 6B §3, 6D rows, coverage waived, deferred rows scored; no row 2 granularity note: Task 11 not shipped). Release per the user's item 24 answer. No open hotfix row is actionable (79/86 wait on the user, 85/87 on the release).
+3. Verify after each release: journal 219's deferred rows, item 12, item 16, rows 49/68, the 6B by-cause row, Watch reads (56, 70); Task 11's and fix 87's judge-after; `exec.phase_place_ms` per `exec.placed` after fix 85.
+4. Operate: storage retention proposal (`reports/2026-09-15-storage-retention-proposal.md`; the user decides by 2026-09-22). Friday alias pass done (journal 285); the next pass is Monday 09:30 CT. 6D acceptance rows and 4.6 T18b/T19 wait for game windows. Usage.py measurement is the user's (journal 247).
 
 ## Active units
 
+- **6D.1**: `not planned`; next plan-next, all T1-T8 pending. Draft paths in Resume first/U10; no phase branch, ledger or worker yet (289).
 - **hotfix row 87**: done to merge (8681b74); batch closed at 2 of 12, 11:03-12:39 CT; worktree and branch removed; grant revoked.
 - **hotfix fix 85**: done to merge (4d2cdcc); worktree and branch kept until the release verification.
 - **phase 6D**: Task 11 merged (283); acceptance rows at game windows, §4 read-backs, item 12 baseline, re-archive and final review, roadmap `done`. Ledger `.superpowers/sdd/2026-09-13-phase6d-sustained-evaluation/progress.md`.
@@ -36,7 +49,7 @@ Updated 2026-09-18 12:40 CT (17:40 UTC) by controller session sports-ed in `/hom
 - Receipts by stage: Fix 87: code 8681b74, suite 4,242 passed (release tree 395b8a19, receipt in test-state), merged 12:39 CT, deploy gated. Task 11: 0fe5890, 4,237 passed, merged 11:03 CT, deploy gated. Fix 85: 4d2cdcc, 4,231 passed at e49a988, merged 09:21 CT, deploy pending. Fix 79: deployed 4066197 07:23 CT, verify 275 (mechanism PASS, effect FAIL). Preflight: evidence/2026-09-17-preflight-2048.txt (journal 270).
 - Fixture grant UPDATE(indisvalid) ON: harness_test_main (+ shards), phase6d_merge_main, phase6d_merge_review (fix_2026_09_18_exhausted_completion revoked 12:39 CT). Older fix databases: `make testdb-prune`.
 - Worktrees: fix-2026-09-18-orders-intent-index (merged, kept to the release), phase6d-merge-main; Mac-era fix-45/fix-48/recovery worktrees preserved.
-- Untracked on main, not the loop's (another session's fill-starvation review, 2026-09-18): `docs/superpowers/.gitignore`, `docs/superpowers/.ignore`, `evidence/2026-09-18-fill-review-*`, `evidence/2026-09-18-fill-starvation-queries.txt`, `reports/2026-09-18-fill-starvation-packet.md`. Left alone; the release planner needs a clean porcelain, so they must be committed or moved before any release.
+- Two pre-existing Graft ignore files remain untracked; ownership/release handling in Resume first.
 - Graft (journal 286): project-only wiring on main 5383c34; the graft MCP server loads at the next controller launch.
 - Tooling: run full suites detached (`setsid nohup make test`) when free memory is under ~3 GB; a monitor's pgrep pattern must not match its own command line (memory note harness-memory-kill-2026-09-18).
 

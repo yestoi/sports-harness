@@ -1,0 +1,189 @@
+\set ON_ERROR_STOP on
+\pset pager off
+Pager usage is off.
+\timing on
+Timing is on.
+SET default_transaction_read_only = on;
+SET
+Time: 0.054 ms
+SET statement_timeout = '25s';
+SET
+Time: 0.019 ms
+SET lock_timeout = '1s';
+SET
+Time: 0.023 ms
+SET application_name = 'codex_fill_review';
+SET
+Time: 0.020 ms
+\echo F. Latest fair actually timestamped before cancellation, deterministic bounded sample
+F. Latest fair actually timestamped before cancellation, deterministic bounded sample
+BEGIN READ ONLY;
+BEGIN
+Time: 0.021 ms
+SELECT clock_timestamp(),current_setting('transaction_read_only');
+        clock_timestamp        | current_setting
+-------------------------------+-----------------
+ 2026-09-18 17:38:26.762078+00 | on
+(1 row)
+
+Time: 0.227 ms
+WITH sampled AS MATERIALIZED (
+ SELECT id,venue_market_id,fair_row_id_at_place,cancelled_at,placed_at FROM orders
+ WHERE NOT replay AND cancel_reason='fair_stale' AND placed_at>='2026-09-15 05:23:44+00'
+ AND cancelled_at<'2026-09-18 17:37+00' AND id%47=0 ORDER BY id LIMIT 650
+), x AS (
+ SELECT o.*,fv.created_at fair_ts,g.fair_value_id latest_fair_id,g.stale_allowance_s,
+ extract(epoch FROM o.cancelled_at-fv.created_at) age_s
+ FROM sampled o LEFT JOIN LATERAL (
+ SELECT fair_value_id,stale_allowance_s FROM market_gap_snapshots
+ WHERE venue_market_id=o.venue_market_id AND created_at<=o.cancelled_at
+ ORDER BY created_at DESC,id DESC LIMIT 1
+ ) g ON true LEFT JOIN fair_values fv ON fv.id=g.fair_value_id
+)
+SELECT count(*) sampled_orders,count(*) FILTER(WHERE fair_ts IS NULL) missing_fair,
+ count(*) FILTER(WHERE latest_fair_id<>fair_row_id_at_place) fair_updated_since_placement,
+ count(*) FILTER(WHERE age_s>greatest(180,coalesce(stale_allowance_s,0))) beyond_allowance,
+ round(percentile_cont(0.5) WITHIN GROUP(ORDER BY age_s)::numeric,2) median_age_at_cancel_s,
+ round(percentile_cont(0.9) WITHIN GROUP(ORDER BY age_s)::numeric,2) p90_age_at_cancel_s,
+ min(age_s) min_age_s,max(age_s) max_age_s FROM x;
+ sampled_orders | missing_fair | fair_updated_since_placement | beyond_allowance | median_age_at_cancel_s | p90_age_at_cancel_s | min_age_s  |  max_age_s
+----------------+--------------+------------------------------+------------------+------------------------+---------------------+------------+-------------
+            617 |            0 |                           15 |              617 |                 232.53 |              370.07 | 221.178659 | 1213.604609
+(1 row)
+
+Time: 273.888 ms
+COMMIT;
+COMMIT
+Time: 0.069 ms
+\echo G. Counterfactual first-fill regime, using the sport-wide cadence function logic
+G. Counterfactual first-fill regime, using the sport-wide cadence function logic
+BEGIN READ ONLY;
+BEGIN
+Time: 0.059 ms
+WITH firsts AS (
+ SELECT order_id,min(filled_at) first_fill FROM fills
+ WHERE NOT replay AND fill_method='no_watcher' AND filled_at<'2026-09-18 17:37+00' GROUP BY 1
+), x AS (
+ SELECT o.id,o.variant_id,o.game_id,o.sport,f.first_fill,
+ extract(hour FROM f.first_fill AT TIME ZONE 'America/Chicago') hour_ct,
+ extract(isodow FROM f.first_fill AT TIME ZONE 'America/Chicago') dow,
+ EXISTS(SELECT 1 FROM games g WHERE g.sport=o.sport AND g.kickoff_utc BETWEEN f.first_fill-interval '4 hours' AND f.first_fill) in_progress,
+ EXISTS(SELECT 1 FROM games g WHERE g.sport=o.sport AND g.kickoff_utc BETWEEN f.first_fill+interval '60 minutes' AND f.first_fill+interval '100 minutes') burst,
+ (SELECT min(g.kickoff_utc) FROM games g WHERE g.sport=o.sport AND (g.kickoff_utc AT TIME ZONE 'America/Chicago')::date=(f.first_fill AT TIME ZONE 'America/Chicago')::date) first_kick,
+ (SELECT max(g.kickoff_utc) FROM games g WHERE g.sport=o.sport AND (g.kickoff_utc AT TIME ZONE 'America/Chicago')::date=(f.first_fill AT TIME ZONE 'America/Chicago')::date) last_kick
+ FROM firsts f JOIN orders o ON o.id=f.order_id WHERE NOT o.replay
+), classified AS (
+ SELECT *, CASE WHEN hour_ct>=1 AND hour_ct<8 AND NOT in_progress THEN 'quiet_hours'
+ WHEN sport='nfl' AND burst THEN '20s_burst'
+ WHEN in_progress OR first_fill BETWEEN first_kick-interval '3 hours' AND last_kick THEN '120s_window'
+ WHEN dow>=6 THEN '300s_weekend' ELSE '900s_weekday' END cadence
+ FROM x
+)
+SELECT CASE WHEN id>10886 THEN 'post_repair_order' ELSE 'pre_repair_order' END cohort,
+ cadence,count(*) orders,count(DISTINCT game_id) games FROM classified GROUP BY 1,2 ORDER BY 1,2;
+      cohort       |   cadence    | orders | games
+-------------------+--------------+--------+-------
+ post_repair_order | 120s_window  |      2 |     1
+ post_repair_order | 900s_weekday |    233 |     7
+ post_repair_order | quiet_hours  |      3 |     2
+ pre_repair_order  | 120s_window  |    256 |    18
+ pre_repair_order  | 300s_weekend |     16 |     1
+ pre_repair_order  | 900s_weekday |    236 |    21
+ pre_repair_order  | quiet_hours  |     24 |     6
+(7 rows)
+
+Time: 160.778 ms
+COMMIT;
+COMMIT
+Time: 0.034 ms
+\echo H. Markout evidence split by the simulator that produced the FIRST no-watcher fill
+H. Markout evidence split by the simulator that produced the FIRST no-watcher fill
+BEGIN READ ONLY;
+BEGIN
+Time: 0.019 ms
+WITH firsts AS MATERIALIZED (
+ SELECT DISTINCT ON(order_id) order_id,id first_fill_id,filled_at FROM fills
+ WHERE NOT replay AND fill_method='no_watcher' AND filled_at<'2026-09-18 17:37+00'
+ ORDER BY order_id,filled_at,id
+)
+SELECT o.variant_id,CASE WHEN f.first_fill_id<=1878 THEN 'pre_repair_fill' ELSE 'post_repair_fill' END cohort,
+ count(*) scored_orders,count(DISTINCT o.game_id) games,
+ count(*) FILTER(WHERE k.fair_changed AND k.fair_p IS NOT NULL AND k.p_used IS NOT NULL AND k.fee_per_contract IS NOT NULL) changed_usable,
+ count(DISTINCT o.game_id) FILTER(WHERE k.fair_changed AND k.fair_p IS NOT NULL AND k.p_used IS NOT NULL AND k.fee_per_contract IS NOT NULL) changed_games,
+ round(avg(100*(k.fair_p-k.p_used-k.fee_per_contract)) FILTER(WHERE k.fair_changed),3) mean_net_markout_pts,
+ round(avg(100*(k.fair_p-k.p_used-k.fee_per_contract)),3) all_rows_net_markout_pts
+FROM firsts f JOIN orders o ON o.id=f.order_id JOIN markouts k ON k.order_id=o.id AND k.anchor='nw_fill' AND k.horizon='30m'
+WHERE NOT o.replay AND k.horizon_ts<'2026-09-18 17:37+00'
+AND NOT EXISTS(SELECT 1 FROM benchmarks b WHERE b.game_id=o.game_id AND b.kickoff_moved)
+GROUP BY 1,2 ORDER BY 1,2;
+  variant_id  |      cohort      | scored_orders | games | changed_usable | changed_games | mean_net_markout_pts | all_rows_net_markout_pts
+--------------+------------------+---------------+-------+----------------+---------------+----------------------+--------------------------
+ 5632da729fa7 | post_repair_fill |           191 |    11 |            191 |            11 |               -0.755 |                   -0.755
+ 5632da729fa7 | pre_repair_fill  |           142 |    11 |            142 |            11 |                1.417 |                    1.417
+ f259ca109084 | post_repair_fill |            95 |     8 |             95 |             8 |               -1.215 |                   -1.215
+ f259ca109084 | pre_repair_fill  |           117 |     7 |            117 |             7 |                1.649 |                    1.649
+ ff363c8ac08d | post_repair_fill |            11 |     3 |             11 |             3 |                0.083 |                    0.083
+ ff363c8ac08d | pre_repair_fill  |            15 |     3 |             15 |             3 |                2.223 |                    2.223
+(6 rows)
+
+Time: 36.789 ms
+COMMIT;
+COMMIT
+Time: 0.141 ms
+\echo I. Present watched versus counterfactual book dirtiness, NOT interchangeable gate populations
+I. Present watched versus counterfactual book dirtiness, NOT interchangeable gate populations
+BEGIN READ ONLY;
+BEGIN
+Time: 0.066 ms
+SELECT variant_id,
+ count(*) FILTER(WHERE filled_contracts>0) watched_filled,
+ count(*) FILTER(WHERE filled_contracts>0 AND book_source='ws' AND dirty_minutes=0) watched_filled_gate_clean,
+ count(*) FILTER(WHERE nw_filled_contracts>0) nw_filled,
+ count(*) FILTER(WHERE nw_filled_contracts>0 AND book_source='ws' AND coalesce(nw_dirty_seconds,dirty_seconds)=0) nw_filled_zero_dirty,
+ count(*) FILTER(WHERE nw_filled_contracts>0 AND nw_dirty_seconds IS NULL) nw_filled_missing_separate_dirty
+FROM orders WHERE NOT replay AND placed_at>'2026-09-15 05:23:44+00' AND placed_at<'2026-09-18 17:37+00'
+GROUP BY 1 ORDER BY 1;
+  variant_id  | watched_filled | watched_filled_gate_clean | nw_filled | nw_filled_zero_dirty | nw_filled_missing_separate_dirty
+--------------+----------------+---------------------------+-----------+----------------------+----------------------------------
+ 5632da729fa7 |              1 |                         1 |       153 |                    1 |                                1
+ f259ca109084 |              1 |                         1 |        77 |                    0 |                                0
+ ff363c8ac08d |              0 |                         0 |         8 |                    0 |                                0
+(3 rows)
+
+Time: 33.978 ms
+COMMIT;
+COMMIT
+Time: 0.104 ms
+\echo J. Index definitions for choosing bounded follow-up reads
+J. Index definitions for choosing bounded follow-up reads
+BEGIN READ ONLY;
+BEGIN
+Time: 0.099 ms
+SELECT tablename,indexname,indexdef FROM pg_indexes
+WHERE schemaname='public' AND tablename IN ('orders','veto_decisions','veto_queue','signals','gate_reports') ORDER BY 1,2;
+   tablename    |            indexname             |                                                                                                                 indexdef
+----------------+----------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ gate_reports   | gate_reports_pkey                | CREATE UNIQUE INDEX gate_reports_pkey ON public.gate_reports USING btree (id)
+ gate_reports   | uq_gate_report                   | CREATE UNIQUE INDEX uq_gate_report ON public.gate_reports USING btree (evaluated_at, variant_id)
+ orders         | ix_orders_game                   | CREATE INDEX ix_orders_game ON public.orders USING btree (game_id)
+ orders         | ix_orders_key_placed             | CREATE INDEX ix_orders_key_placed ON public.orders USING btree (variant_id, venue_market_id, side, placed_at)
+ orders         | ix_orders_nw                     | CREATE INDEX ix_orders_nw ON public.orders USING btree (nw_done, expiry) WHERE (nw_done = false)
+ orders         | ix_orders_status                 | CREATE INDEX ix_orders_status ON public.orders USING btree (status, replay)
+ orders         | orders_client_order_id_key       | CREATE UNIQUE INDEX orders_client_order_id_key ON public.orders USING btree (client_order_id)
+ orders         | orders_pkey                      | CREATE UNIQUE INDEX orders_pkey ON public.orders USING btree (id)
+ orders         | uq_open_order                    | CREATE UNIQUE INDEX uq_open_order ON public.orders USING btree (venue, ticker, side, variant_id) WHERE (((status)::text = ANY ((ARRAY['open'::character varying, 'partially_filled'::character varying])::text[])) AND (replay = false))
+ signals        | ix_signal_market_created         | CREATE INDEX ix_signal_market_created ON public.signals USING btree (venue_market_id, created_at)
+ signals        | ix_signal_variant_created        | CREATE INDEX ix_signal_variant_created ON public.signals USING btree (variant_id, created_at)
+ signals        | signals_pkey                     | CREATE UNIQUE INDEX signals_pkey ON public.signals USING btree (id)
+ signals        | uq_signal_key                    | CREATE UNIQUE INDEX uq_signal_key ON public.signals USING btree (run_id, variant_id, venue_market_id, side, replay)
+ veto_decisions | ix_veto_decisions_decided        | CREATE INDEX ix_veto_decisions_decided ON public.veto_decisions USING btree (decided_at DESC)
+ veto_decisions | ix_veto_decisions_signal_created | CREATE INDEX ix_veto_decisions_signal_created ON public.veto_decisions USING btree (signal_created_at DESC)
+ veto_decisions | veto_decisions_pkey              | CREATE UNIQUE INDEX veto_decisions_pkey ON public.veto_decisions USING btree (signal_id)
+ veto_queue     | ix_veto_queue_open               | CREATE INDEX ix_veto_queue_open ON public.veto_queue USING btree (bucket_start, game_id, market_type) WHERE (claimed_at IS NULL)
+ veto_queue     | veto_queue_pkey                  | CREATE UNIQUE INDEX veto_queue_pkey ON public.veto_queue USING btree (signal_id)
+(18 rows)
+
+Time: 31.954 ms
+COMMIT;
+COMMIT
+Time: 0.038 ms

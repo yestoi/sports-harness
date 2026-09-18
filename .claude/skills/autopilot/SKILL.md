@@ -112,6 +112,13 @@ Orient 5/6 and plan-next step 5. Keep separate plans, branches and ledgers; trac
 git/main operations remain serial, file conflicts and per-branch database limits still apply, and the implementer ceiling is
 unchanged. Keep 6C `planned` until its full acceptance is satisfied; a partial delivery does not finish the milestone.
 
+**U10 execution viability priority (user-directed resume setup, 2026-09-18).** After applicable Orient 0-4
+units, select 6D.1's `plan-next` before other development; its adopted draft design and delivery outline do
+not waive the required design/conformance/plan reviews. Once its reviewed plan is committed and status is
+`planned`, prioritize ready 6D.1 phase tasks. This is the roadmap U10 exception to Orient 5/6's first-phase
+ordering. While 6D.1 waits on a review, data or a dependency, continue other ready work. Existing milestone
+acceptance, timed duties, release holds, file ownership and ceilings remain in force; U10 does not launch a controller.
+
 ## Parallel work: worktrees and per-branch test databases
 
 - Every implementer runs in its own worktree: `make worktree BR=<branch> [BASE=main|phaseN-<slug>]` prints the path

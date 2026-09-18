@@ -253,7 +253,7 @@ class WorkerToolsTests(unittest.TestCase):
                 server.join(timeout=3)
             self.assertFalse(server.is_alive())
 
-    def test_agent_and_project_config_expose_only_fixed_capabilities(self):
+    def test_worker_allowlist_and_project_config_match_authorized_capabilities(self):
         agent = (ROOT / '.claude/agents/sports-worker.md').read_text()
         tools_line = next(line for line in agent.splitlines() if line.startswith('tools:'))
         self.assertEqual(tools_line, 'tools: mcp__sports_worker__shell, mcp__sports_worker__screenshot')
@@ -261,7 +261,10 @@ class WorkerToolsTests(unittest.TestCase):
         server = config['mcpServers']['sports_worker']
         self.assertEqual(server['command'], '/usr/bin/python3')
         self.assertEqual(server['args'], ['-I', '/home/trey/dev/sports/scripts/worker-tools.py'])
-        self.assertEqual(set(config['mcpServers']), {'sports_worker'})
+        # Graft was added for the controller in journal 286. Workers retain the
+        # exact two-tool allowlist above; additional project servers need approval.
+        self.assertEqual(set(config['mcpServers']), {'sports_worker', 'graft'})
+        self.assertEqual(config['mcpServers']['graft'], {'command': 'graft', 'args': ['mcp']})
 
 
 if __name__ == '__main__':

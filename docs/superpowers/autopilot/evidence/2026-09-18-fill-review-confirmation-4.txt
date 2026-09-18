@@ -1,0 +1,71 @@
+\set ON_ERROR_STOP on
+\pset pager off
+Pager usage is off.
+\timing on
+Timing is on.
+SET default_transaction_read_only=on;
+SET
+Time: 0.052 ms
+SET statement_timeout='25s';
+SET
+Time: 0.019 ms
+SET lock_timeout='1s';
+SET
+Time: 0.014 ms
+SET application_name='codex_fill_review';
+SET
+Time: 0.013 ms
+\echo O. Concrete repeated liquidity, post-repair counterfactuals on the gate variant
+O. Concrete repeated liquidity, post-repair counterfactuals on the gate variant
+BEGIN READ ONLY;
+BEGIN
+Time: 0.013 ms
+SELECT clock_timestamp(),current_setting('transaction_read_only');
+        clock_timestamp        | current_setting
+-------------------------------+-----------------
+ 2026-09-18 17:44:12.300342+00 | on
+(1 row)
+
+Time: 0.238 ms
+WITH x AS MATERIALIZED (
+ SELECT o.ticker,o.side,f.source_trade_id,min(f.filled_at) trade_at,
+ count(DISTINCT o.id) hypothetical_orders,sum(f.contracts) attributed_contracts
+ FROM fills f JOIN orders o ON o.id=f.order_id
+ WHERE NOT f.replay AND NOT o.replay AND f.fill_method='no_watcher' AND f.id>1878
+ AND o.variant_id='5632da729fa7' AND f.source_trade_id IS NOT NULL
+ AND f.filled_at>='2026-09-15 05:23:44+00' AND f.filled_at<'2026-09-18 17:37+00'
+ GROUP BY 1,2,3 ORDER BY count(DISTINCT o.id) DESC, f.source_trade_id LIMIT 5
+)
+SELECT x.*,p.count recorded_trade_contracts,p.ts recorded_trade_ts,
+ round(attributed_contracts/nullif(p.count,0),2) attribution_multiple
+FROM x LEFT JOIN LATERAL (
+ SELECT count,ts FROM venue_trades t WHERE t.venue='kalshi' AND t.ticker=x.ticker
+ AND t.trade_id=x.source_trade_id AND t.ts BETWEEN x.trade_at-interval '1 second' AND x.trade_at+interval '1 second'
+ AND t.ts>='2026-09-15 05:23:44+00' AND t.ts<'2026-09-18 17:37+00'
+ ORDER BY t.ts LIMIT 1
+) p ON true;
+             ticker             | side |           source_trade_id            |         trade_at          | hypothetical_orders | attributed_contracts | recorded_trade_contracts |     recorded_trade_ts     | attribution_multiple
+--------------------------------+------+--------------------------------------+---------------------------+---------------------+----------------------+--------------------------+---------------------------+----------------------
+ KXNCAAFGAME-26SEP19LSUMISS-LSU | yes  | 07221f8a-68e9-b983-f386-35b4ecb2f730 | 2026-09-17 00:43:25.48+00 |                  45 |               346.60 |                    10.00 | 2026-09-17 00:43:25.48+00 |                34.66
+ KXNCAAFGAME-26SEP19LSUMISS-LSU | yes  | 07221f8a-68e9-bb35-dc46-e47d7646cef4 | 2026-09-17 00:43:25.48+00 |                  25 |               250.00 |                    10.00 | 2026-09-17 00:43:25.48+00 |                25.00
+ KXNCAAFGAME-26SEP19LSUMISS-LSU | yes  | 07221f8a-68e9-bb59-e9f7-6e25019abc62 | 2026-09-17 00:43:25.48+00 |                  25 |               225.00 |                     9.00 | 2026-09-17 00:43:25.48+00 |                25.00
+ KXNCAAFGAME-26SEP19LSUMISS-LSU | yes  | 07221f8b-2b59-b544-efb2-4d2225ff1999 | 2026-09-17 00:43:25.48+00 |                  25 |               500.00 |                    20.00 | 2026-09-17 00:43:25.48+00 |                25.00
+ KXNCAAFGAME-26SEP19LSUMISS-LSU | yes  | 07221f8b-4e71-b6fd-fd33-5451f6934536 | 2026-09-17 00:43:25.48+00 |                  25 |              1175.00 |                   299.73 | 2026-09-17 00:43:25.48+00 |                 3.92
+(5 rows)
+
+Time: 66.090 ms
+COMMIT;
+COMMIT
+Time: 0.042 ms
+\echo P. Game concentration labels
+P. Game concentration labels
+BEGIN READ ONLY;
+BEGIN
+Time: 0.026 ms
+SELECT g.id,g.sport,h.canonical_name home,a.canonical_name away,g.kickoff_utc
+FROM games g LEFT JOIN teams h ON h.id=g.home_team_id LEFT JOIN teams a ON a.id=g.away_team_id
+WHERE g.id IN (469,116,118,549) ORDER BY g.id;
+ERROR:  column h.canonical_name does not exist
+LINE 1: SELECT g.id,g.sport,h.canonical_name home,a.canonical_name a...
+                            ^
+Time: 36.508 ms
