@@ -3388,3 +3388,14 @@ User, verbatim (07:19 CT, in chat): "Read /home/trey/dev/sports/.superpowers/sdd
 - Dispatches: 0; CT-day controller count remains 15. Runtime tests: not run for this documentation/routing change. No controller launch, experiment activation or deploy.
 - Result: setup handoff validated; normal Kickoff resumes recovery/preflight, then required 6D.1 planning reviews.
 - Next: user launches through scripts/autopilot-session.sh start-herdr and /autopilot; re-arm 17:55 and 18:25 CT checks, honor item 24's release gate, run 6D.1 plan-next.
+
+## 290. preflight - session sports-e2 launched per Kickoff; 6D.1 plan-next selected under U10 - 2026-09-18 13:17-13:20 CT
+
+- Orient: preflight first (clock 13:17:07 CT); then rule 0 no (no archived ledger with a `planned` status: 6C stays planned by its own acceptance clause), rule 1 no (Open rows 79/86 wait on the user, 85/87 on the gated release; entry 289 is not a FAIL), rule 2 gated (main ahead of 4066197 by fix 85, Task 11 and fix 87; journal 284's gate stands until the user answers item 24), rule 3 no (verify 275 followed deploy 273; the 17:55/18:25 CT reads are the next due wakeups), rule 4 no (daily line 279 and the Friday alias pass 285 done; nothing overdue), so U10's exception selects **plan-next for 6D.1**.
+- Branch / commits: main c919041, clean apart from the two untracked Graft ignore files (journal 289). No worker worktree or branch created yet.
+- Result: done. `make preflight` exit 0 with the exact line `paper posture intact` (evidence/2026-09-18-preflight-1317.txt); disk 19 % used; free memory 2.4 GB with 17 GB available; runtime 4066197 healthy, credits 4,867,316 of 5,000,000; NCAAF 18:30 CT tonight and 13:00 CT Saturday. `context.py check` ok; the autopilot skill tests pass (72). `claude auth status` logged in (claude.ai). R3 first-of-day notifications: desktop `notify` exit 0; native PushNotification sent to the terminal (mobile push not sent, Remote Control inactive). Worker sandbox smoke in `restart-worker-smoke`: `/srv` absent, DNS blocked, the test socket present, `.env*`/`secrets/` masked, and the positive test path `make test TEST_ARGS=tests/test_agefmt.py` 116 passed on `harness_test_recovery_worker_smoke`. Peer session `plans-f3` is busy and is not a controller.
+- Dispatches: 0. Tests: n/a (skill tests only). Review: n/a. Deploy: none. Verification: not run (preflight).
+- Rulings: the Thu-created durable reminder 2026091802 (18:25 CT) no longer exists as a timer while 2026091803 (17:55) does; re-armed as 2026091804 with the same text rather than guessing why it vanished. Native one-shot crons f72a80eb (17:55) and f8d80b2f (18:25) armed and verified by CronList. `Resume first` consumed: its facts moved to Right now, Active units and Pending results.
+- Anomalies: none (no NEEDS USER line from `context.py check`).
+- Carried forward: none.
+- Next: plan-next 6D.1 (design author dispatch), wakeup 17:55 CT.
