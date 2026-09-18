@@ -5,7 +5,8 @@ from decimal import Decimal
 import pytest
 
 from harness.experiments.execution_viability.baseline import (
-    MISMATCH_KINDS, Mismatch, compare_actions, recorded_actions, render_baseline,
+    MISMATCH_KINDS, Mismatch, compare_actions, compare_fills, recorded_actions, recorded_fills,
+    render_baseline,
 )
 from harness.experiments.execution_viability.capture import Limitation
 
@@ -174,3 +175,46 @@ def test_the_arm_reproduces_the_recorded_cancel_and_its_replacement_on_the_fixtu
     assert replacement.id != order.id
     out = render_baseline(mismatches, instants=2, live_estimate=3575, limitations=[])
     assert "1 total, 1 unexplained" in out and "verdict: fail" in out
+
+
+def test_a_fill_that_differs_from_the_tape_is_one_fill_mismatch(db_session):
+    """\u00a71.3(f) compares the watched fills, not only the placements and cancels.
+
+    The tape holds one fill of 12 contracts at 0.48, stamped 12:00:05. The arm's queue model
+    filled 7 of the same order at the same instant -- five contracts of the print went to
+    someone ahead of it. That is one `fill` mismatch on `contracts`, and not two absences.
+    """
+    from harness.db.models import Fill
+    from tests.test_exp_adapter import _game, _intent, _market, _order, _priced
+
+    game = _game(db_session)
+    market = _market(db_session, game_id=game.id)
+    _priced(db_session, market, at=NOW - timedelta(seconds=30))
+    intent = _intent(db_session, market, created_at=NOW - timedelta(minutes=5))
+    order = _order(db_session, intent, market, placed_at=NOW)
+    filled_at = NOW + timedelta(seconds=5)
+    db_session.add(Fill(order_id=order.id, prob=Decimal("0.4800"), contracts=Decimal("12"),
+                        fee=Decimal("0.0500"), filled_at=filled_at, fill_method="queue_model",
+                        replay=False))
+    db_session.commit()
+    tape = recorded_fills(db_session, warmup_start=NOW - timedelta(hours=1),
+                          observation_end=NOW + timedelta(hours=1), variant_ids=["v_base"])
+    assert [(row["venue_market_id"], row["side"], row["filled_at"]) for row in tape] == \
+        [(market.id, "yes", filled_at)]
+    produced = [{"kind": "fill", "order_id": -1, "instant": NOW + STEP, "filled_at": filled_at,
+                 "venue_market_id": market.id, "side": "yes", "prob": Decimal("0.4800"),
+                 "contracts": Decimal("7")}]
+    [mismatch] = compare_fills(tape, produced, run_id="r", arm_id="A")
+    assert mismatch.kind == "fill" and mismatch.instant == filled_at
+    assert mismatch.expected == {"contracts": "12.00"}   # `fills.contracts` scale
+    assert mismatch.actual == {"contracts": "7"} and mismatch.explained is False
+
+
+def test_a_fill_the_arm_produced_and_the_tape_does_not_hold_is_a_fill_mismatch():
+    produced = [{"kind": "fill", "filled_at": NOW, "venue_market_id": 1, "side": "yes",
+                 "prob": Decimal("0.4800"), "contracts": Decimal("5")}]
+    [extra] = compare_fills([], produced, run_id="r", arm_id="A")
+    assert extra.kind == "fill" and extra.expected == {}
+    assert extra.actual["contracts"] == "5"
+    # The same fill on both sides pairs and says nothing.
+    assert compare_fills(produced, list(produced), run_id="r", arm_id="A") == []

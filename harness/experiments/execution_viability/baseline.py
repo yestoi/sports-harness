@@ -80,29 +80,34 @@ def compare_actions(recorded: Sequence[dict], produced: Sequence[dict], *, run_i
     left = [row for row in recorded if row.get("kind") in COMPARED_KINDS]
     right = [row for row in produced if row.get("kind") in COMPARED_KINDS]
     out: list[Mismatch] = []
-    pending_right = list(right)
+    # The buckets hold **positions** in `right`, and a paired position is struck off by index.
+    # Two identical actions at one instant are two rows, and `list.remove` would delete
+    # whichever compared equal first, leaving one of them unpairable for the rest of the pass.
+    taken = [False] * len(right)
     paired: list[tuple[dict, dict]] = []
     unpaired_left: list[dict] = []
-    index: dict[tuple, list[dict]] = {}
-    for row in pending_right:
-        index.setdefault(_key(row), []).append(row)
+    index: dict[tuple, list[int]] = {}
+    for position, row in enumerate(right):
+        index.setdefault(_key(row), []).append(position)
     for row in left:
         bucket = index.get(_key(row))
         if bucket:
-            match = bucket.pop(0)
-            pending_right.remove(match)
-            paired.append((row, match))
+            position = bucket.pop(0)
+            taken[position] = True
+            paired.append((row, right[position]))
         else:
             unpaired_left.append(row)
-    loose: dict[tuple, list[dict]] = {}
-    for row in pending_right:
-        loose.setdefault(_loose(row), []).append(row)
+    loose: dict[tuple, list[int]] = {}
+    for position, row in enumerate(right):
+        if not taken[position]:
+            loose.setdefault(_loose(row), []).append(position)
     still_unpaired: list[dict] = []
     for row in unpaired_left:
         bucket = loose.get(_loose(row))
         if bucket:
-            match = bucket.pop(0)
-            pending_right.remove(match)
+            position = bucket.pop(0)
+            taken[position] = True
+            match = right[position]
             kind = "cancel_instant" if row.get("kind") == "cancel" else "expiry"
             if row.get("kind") == "place":
                 kind = "action"
@@ -117,7 +122,9 @@ def compare_actions(recorded: Sequence[dict], produced: Sequence[dict], *, run_i
         out.append(Mismatch(run_id=run_id, arm_id=arm_id, instant=row.get("instant"),
                             venue_market_id=row.get("venue_market_id"), kind="action",
                             expected=_summary(row), actual={}, cause=None, explained=False))
-    for row in pending_right:
+    for position, row in enumerate(right):
+        if taken[position]:
+            continue
         out.append(Mismatch(run_id=run_id, arm_id=arm_id, instant=row.get("instant"),
                             venue_market_id=row.get("venue_market_id"), kind="action",
                             expected={}, actual=_summary(row), cause=None, explained=False))
@@ -139,6 +146,66 @@ def compare_actions(recorded: Sequence[dict], produced: Sequence[dict], *, run_i
                     actual={field: _plain(actual.get(field))}, cause=None, explained=False))
                 break
     return sorted(out, key=lambda m: (m.instant or datetime.min, m.kind))
+
+
+#: A fill's identity on the tape. §1.3(f) names `(instant, venue_market_id, side)` plus the
+#: fill stamp; a recorded fill has no decision instant of its own -- `fills` carries `filled_at`
+#: and nothing else -- so the tape side's instant **is** `filled_at`, and that is what both
+#: sides are paired on. The arm's own step instant is carried on the mismatch, not in the key.
+def _fill_key(fill: dict) -> tuple:
+    return (fill.get("venue_market_id"), fill.get("side"), fill.get("filled_at"))
+
+
+#: The two quantities a paired fill is compared on, in order: the first difference is reported.
+_FILL_FIELDS: tuple[str, ...] = ("contracts", "prob")
+
+
+def compare_fills(recorded: Sequence[dict], produced: Sequence[dict], *, run_id: str,
+                  arm_id: str) -> list[Mismatch]:
+    """§1.3(f)'s watched fills: pair the tape's fills with the arm's and report the rest.
+
+    Every unpaired fill on either side, and every paired fill whose size or price differs, is
+    one `fill` mismatch. A fill the arm produced that the tape does not hold is as much a
+    finding as one it missed: the queue model is exactly what this comparison is checking.
+    """
+    right = list(produced)
+    taken = [False] * len(right)
+    index: dict[tuple, list[int]] = {}
+    for position, row in enumerate(right):
+        index.setdefault(_fill_key(row), []).append(position)
+    out: list[Mismatch] = []
+    for row in recorded:
+        bucket = index.get(_fill_key(row))
+        if not bucket:
+            out.append(Mismatch(
+                run_id=run_id, arm_id=arm_id, instant=row.get("filled_at"),
+                venue_market_id=row.get("venue_market_id"), kind="fill",
+                expected=_fill_summary(row), actual={}, cause=None, explained=False))
+            continue
+        position = bucket.pop(0)
+        taken[position] = True
+        match = right[position]
+        for field in _FILL_FIELDS:
+            if _differs(row.get(field), match.get(field)):
+                out.append(Mismatch(
+                    run_id=run_id, arm_id=arm_id, instant=row.get("filled_at"),
+                    venue_market_id=row.get("venue_market_id"), kind="fill",
+                    expected={field: _plain(row.get(field))},
+                    actual={field: _plain(match.get(field))}, cause=None, explained=False))
+                break
+    for position, row in enumerate(right):
+        if taken[position]:
+            continue
+        out.append(Mismatch(
+            run_id=run_id, arm_id=arm_id, instant=row.get("filled_at"),
+            venue_market_id=row.get("venue_market_id"), kind="fill",
+            expected={}, actual=_fill_summary(row), cause=None, explained=False))
+    return sorted(out, key=lambda m: (m.instant or datetime.min, m.kind))
+
+
+def _fill_summary(fill: dict) -> dict:
+    return {key: _plain(fill.get(key))
+            for key in ("filled_at", "venue_market_id", "side", "prob", "contracts")}
 
 
 def _differs(expected, actual) -> bool:
@@ -179,6 +246,42 @@ _RECORDED_EVENTS = text(
     "where order_id = any(:order_ids) and ts >= :start and ts <= :end")
 
 
+#: The fills of exactly those orders, on `ix_fills_order_ts (order_id, filled_at)`
+#: (models.py:657). `replay = false` for the same reason the orders read carries it.
+_RECORDED_FILLS = text(
+    "select order_id, prob, contracts, filled_at from fills "
+    "where order_id = any(:order_ids) and filled_at >= :start and filled_at <= :end "
+    "and replay = false")
+
+
+def _slice_orders(session: Session, bounds: dict, variant_ids: Sequence[str]) -> dict:
+    """The window's orders by id: the one read both recorded sides are bounded by."""
+    rows = session.execute(_RECORDED_ORDERS, bounds | {"variant_ids": list(variant_ids)}).all()
+    return {row.id: row for row in rows}
+
+
+def recorded_fills(session: Session, *, warmup_start: datetime, observation_end: datetime,
+                   variant_ids: Sequence[str]) -> list[dict]:
+    """The watched fills of the slice, in the shape `compare_fills` pairs on (§1.3f).
+
+    `fills` carries no market or side of its own -- both are the order's -- so the order read
+    that bounds this one also supplies them.
+    """
+    bounds = {"start": warmup_start, "end": observation_end}
+    by_id = _slice_orders(session, bounds, variant_ids)
+    if not by_id:
+        return []
+    rows = session.execute(_RECORDED_FILLS, bounds | {"order_ids": sorted(by_id)}).all()
+    out = []
+    for row in rows:
+        order = by_id[row.order_id]
+        out.append({"kind": "fill", "order_id": row.order_id, "filled_at": row.filled_at,
+                    "instant": row.filled_at, "venue_market_id": order.venue_market_id,
+                    "side": order.side, "variant_id": order.variant_id, "prob": row.prob,
+                    "contracts": row.contracts})
+    return sorted(out, key=lambda row: (row["filled_at"], row["order_id"]))
+
+
 def recorded_actions(session: Session, *, warmup_start: datetime, observation_end: datetime,
                      variant_ids: Sequence[str]) -> list[dict]:
     """What the executor actually did in the slice, in the adapter's own action shape.
@@ -188,11 +291,9 @@ def recorded_actions(session: Session, *, warmup_start: datetime, observation_en
     `cap_gate` -- is a decision not to act and is not part of the action comparison.
     """
     bounds = {"start": warmup_start, "end": observation_end}
-    orders = session.execute(_RECORDED_ORDERS,
-                             bounds | {"variant_ids": list(variant_ids)}).all()
-    if not orders:
+    by_id = _slice_orders(session, bounds, variant_ids)
+    if not by_id:
         return []
-    by_id = {row.id: row for row in orders}
     events = session.execute(_RECORDED_EVENTS,
                              bounds | {"order_ids": sorted(by_id)}).all()
     out: list[dict] = []

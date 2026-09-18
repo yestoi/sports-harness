@@ -260,34 +260,40 @@ def capture_cmd(run_id: str = typer.Option(..., "--run-id"),
                 until: datetime = typer.Option(..., "--until",
                                                formats=["%Y-%m-%dT%H:%M:%S%z"]),
                 tickers: str = typer.Option(..., "--tickers"),
-                variants: str = typer.Option("", "--variants")) -> None:
+                variants: str = typer.Option(..., "--variants")) -> None:
     """Write one slice of the tape to the hashed NDJSON tree (§1.3a) and print each file's
     sha256. Reads through the read-only reader, so it fails closed without the grant."""
     configure_logging()
     if until <= since:
         raise typer.BadParameter("--until must be after --since")
     ticker_list = _tickers(tickers)
+    variant_ids = [v.strip() for v in variants.split(",") if v.strip()]
+    if not variant_ids:
+        raise typer.BadParameter("--variants takes a comma-separated list of variant ids")
     # §0.6: every `harness exp` command says whose numbers these are before it prints any.
     print(EXP_LABEL)
     s = get_settings()
     with source.reader(s) as session:
-        variant_ids = [v.strip() for v in variants.split(",") if v.strip()]
+        # The clock is resolved first: its count and the estimate beside it are what the run's
+        # `loop_spacing_unreconstructable` row records, so no capture persists a zeroed one.
         instants, samples, estimate = _clock(session, since=since, until=until,
                                              variant_ids=variant_ids)
-        hashes, limitations = capture.capture_slice(
+        result = capture.capture_slice(
             s, session, run_id=run_id, warmup_start=since, observation_end=until,
-            tickers=ticker_list, variant_ids=variant_ids)
-    spacing = capture.spacing_limitation(run_id, warmup_start=since, observation_end=until,
-                                         instants=len(instants), live_estimate=estimate,
-                                         now=datetime.now(timezone.utc))
+            tickers=ticker_list, variant_ids=variant_ids, instants=len(instants),
+            live_estimate=estimate)
     print(f"run={run_id} tickers={len(ticker_list)} dir={storage.run_dir(s, run_id)}")
     # C1: the resolved instant count is printed beside the live loop estimate, always, so the
     # thinned opportunity clock cannot be read as the live one.
     print(f"  retained action instants   {len(instants)}")
     print(f"  live loop estimate         {estimate} (from {samples} exec.loop_ms samples)")
     for stream in capture.CAPTURE_STREAMS:
-        print(f"  {stream:<14} sha256={hashes[stream]}")
-    for limitation in [spacing, *limitations[1:]]:
+        print(f"  {stream:<14} sha256={result.hashes[stream]}")
+    # §1.2: the manifest entry carries each stream's statement and bound parameters beside its
+    # digest, which is what `capture_hash_mismatch` is evaluated against later.
+    print(f"  manifest entry  streams={len(result.capture_hashes)} "
+          f"canonical_json_bytes={len(result.manifest_json)}")
+    for limitation in result.limitations:
         print(f"  limitation      {limitation.kind}")
 
 
@@ -322,12 +328,20 @@ def baseline_check(run_id: str = typer.Option(..., "--run-id"),
 
         runner = adapter.ArmRunner(run_id=run_id, arm_id="A", policy=None,
                                    variant_cfg=variant_configs(session, variant_ids),
-                                   exec_settings=ExecSettings.from_settings(s), walkers={})
-        produced = [action for result in runner.run(session, list(instants))
-                    for action in result.actions]
+                                   exec_settings=ExecSettings.from_settings(s), walkers={},
+                                   tz=s.tz_local)
+        steps = runner.run(session, list(instants))
+        produced = [action for result in steps for action in result.actions]
+        produced_fills = [fill for result in steps for fill in result.fills]
         recorded = baseline.recorded_actions(session, warmup_start=since, observation_end=until,
                                              variant_ids=variant_ids)
-    mismatches = baseline.compare_actions(recorded, produced, run_id=run_id, arm_id="A")
+        tape_fills = baseline.recorded_fills(session, warmup_start=since, observation_end=until,
+                                             variant_ids=variant_ids)
+    # §1.3(f) compares the actions **and** the watched fills: a lifecycle that places and
+    # cancels at the right instants but fills differently is not a reproduction of it.
+    mismatches = (baseline.compare_actions(recorded, produced, run_id=run_id, arm_id="A")
+                  + baseline.compare_fills(tape_fills, produced_fills, run_id=run_id,
+                                           arm_id="A"))
     spacing = capture.spacing_limitation(run_id, warmup_start=since, observation_end=until,
                                          instants=len(instants), live_estimate=estimate,
                                          now=datetime.now(timezone.utc))

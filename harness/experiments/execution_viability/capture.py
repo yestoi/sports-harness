@@ -106,9 +106,14 @@ class Limitation:
 
 #: C1. Five bounded reads, unioned in Python so each keeps its own index. `replay = false`:
 #: §0.12 forbids reusing the replay flag, so the clock is the production executor's own stamps.
+#: `ix_orders_key_placed` is (variant_id, venue_market_id, side, placed_at): its leading column
+#: is the variant, so a window-only bound cannot ride it. The variant list is therefore part of
+#: the statement, not a filter applied afterwards, and the clock is the clock **of these
+#: variants** -- which is the population the comparison is against.
 _ORDER_INSTANTS = text(
     "select id, placed_at as ts from orders "
-    "where placed_at >= :start and placed_at <= :end and replay = false")      # ix_orders_key_placed
+    "where variant_id = any(:variant_ids) "
+    "  and placed_at >= :start and placed_at <= :end and replay = false")      # ix_orders_key_placed
 #: order_events is indexed on the order id first -- `ix_order_events_order_ts (order_id, ts)`
 #: (models.py:628) and the covering unique `uq_order_event (order_id, kind, ts)` (schema.py:236),
 #: which is the one the planner picks for this projection -- so the bound must ride the order
@@ -123,9 +128,10 @@ _EVENT_INSTANTS = text(
 _INTENT_INSTANTS = text(
     "select created_at as ts from intents "
     "where created_at >= :start and created_at <= :end "
-    "  and variant_id = any(:variant_ids)")                                     # ix_intents_created
+    "  and variant_id = any(:variant_ids) and replay = false")                  # ix_intents_created
 _FILL_INSTANTS = text(
-    "select filled_at as ts from fills where filled_at >= :start and filled_at <= :end")  # ix_fills_filled_at
+    "select filled_at as ts from fills where filled_at >= :start and filled_at <= :end "
+    "and replay = false")                                                      # ix_fills_filled_at
 _SAMPLE_INSTANTS = text(
     "select ts from metric_samples where name = 'exec.loop_ms' "
     "and ts >= :start and ts <= :end")                    # ix_metric_samples_name_ts (name, ts desc)
@@ -139,7 +145,12 @@ def resolve_instants(session: Session, *, warmup_start: datetime, observation_en
     instants is *not* the live loop's spacing, which is why every run carries
     `spacing_limitation()` and every report prints `live_loop_estimate()` beside the count.
     """
-    bounds = {"start": warmup_start, "end": observation_end}
+    if not variant_ids:
+        raise ValueError(
+            "the replay clock is bounded by the variants it belongs to: `ix_orders_key_placed` "
+            "leads with variant_id, and an unbounded clock would be another population's")
+    bounds = {"start": warmup_start, "end": observation_end,
+              "variant_ids": list(variant_ids)}
     orders = session.execute(_ORDER_INSTANTS, bounds).all()
     instants = {row.ts for row in orders}
     order_ids = [row.id for row in orders]
@@ -148,9 +159,7 @@ def resolve_instants(session: Session, *, warmup_start: datetime, observation_en
         # inside the same slice the first statement selected.
         instants |= {row.ts for row in session.execute(
             _EVENT_INSTANTS, bounds | {"order_ids": order_ids}).all()}
-    if variant_ids:
-        instants |= {row.ts for row in session.execute(
-            _INTENT_INSTANTS, bounds | {"variant_ids": list(variant_ids)}).all()}
+    instants |= {row.ts for row in session.execute(_INTENT_INSTANTS, bounds).all()}
     instants |= {row.ts for row in session.execute(_FILL_INSTANTS, bounds).all()}
     instants |= {row.ts for row in session.execute(_SAMPLE_INSTANTS, bounds).all()}
     return tuple(sorted(instants))
@@ -207,6 +216,25 @@ def kickoff_limitation(run_id: str, *, game_id: int, now: datetime) -> Limitatio
         created_at=now)
 
 
+#: §1.3(b): the three streams whose availability stamp is a **proxy** rather than the thing
+#: itself. `orderbook_events.ts` and `venue_trades.ts` are the venue's own clocks; what a
+#: decision could read is our receipt stamp, which the tape keeps only for the REST path
+#: (`fetched_at`). A run says so once, by name, rather than leaving a reader to assume that
+#: event time is availability.
+AVAILABILITY_PROXY_STREAMS: tuple[str, ...] = ("books", "deltas", "prints")
+
+
+def availability_limitation(run_id: str, *, streams: Sequence[str], now: datetime) -> Limitation:
+    """§1.3(b): the streams whose availability stamp cannot be read off the row."""
+    return Limitation(
+        run_id=run_id, kind="availability_unreconstructable",
+        scope={"streams": list(streams)},
+        detail=("these streams carry the venue's event time; the local receipt stamp a decision "
+                "could actually read is not retained per row, so their availability is a proxy "
+                "and a row whose availability cannot be reconstructed stays invisible"),
+        created_at=now)
+
+
 # --- as-of kickoffs (§1.3a, rulings I3/I6) -----------------------------------------------
 
 #: The kickoff **as the decision saw it**. `games.kickoff_utc` is updated in place by the linker,
@@ -221,7 +249,8 @@ _KICKOFF_ASOF = text("""
          where created_at > :since and created_at <= :at            -- ix_intents_created
         union all
         select game_id, kickoff_utc, placed_at as ts from orders
-         where placed_at > :since and placed_at <= :at              -- ix_orders_key_placed
+         where variant_id = any(:variant_ids)                       -- ix_orders_key_placed
+           and placed_at > :since and placed_at <= :at
       ) snap
       join games g on g.id = snap.game_id                           -- games primary key
      where snap.game_id is not null and snap.kickoff_utc is not null and g.sport = :sport
@@ -229,23 +258,35 @@ _KICKOFF_ASOF = text("""
 """)
 
 
-def kickoffs_asof(session: Session, *, at: datetime, sport: str,
+def _kickoff_rows(session: Session, *, at: datetime, sport: str, variant_ids: Sequence[str],
+                  since: datetime | None) -> list:
+    """The frozen snapshot rows themselves, newest per game: `kickoffs_asof`'s own source, and
+    the list `capture_slice` reads the **game ids** from to say which games have no snapshot."""
+    if not variant_ids:
+        raise ValueError("the orders half of the as-of read is bounded by its variants")
+    lower = since if since is not None else at - KICKOFF_ASOF_LOOKBACK
+    return session.execute(_KICKOFF_ASOF, {"since": lower, "at": at, "sport": sport,
+                                           "variant_ids": list(variant_ids)}).all()
+
+
+def kickoffs_asof(session: Session, *, at: datetime, sport: str, variant_ids: Sequence[str],
                   since: datetime | None = None) -> list:
     """The kickoff list `interval_for` may be handed at `at` (rulings I3, I6, I7).
 
     Reads **neither** `games.kickoff_utc` nor any history table. Returns `Kickoff` rows
     (`harness/feeds/espn.py:19`) because `interval_for(sport, now, kickoffs, tz)` takes that type
     and nothing else; of its six fields that function reads only `sport` and `kickoff_utc`, so
-    `home`/`away` are left empty rather than reconstructed from names that are not on the
-    decision's own row. A game with no snapshot row is absent from this list and is the caller's
+    `home`/`away`/`status` are left empty rather than reconstructed from a `games` row
+    whose values are today's and not the decision's. A game with no snapshot row is absent from this list and is the caller's
     `kickoff_limitation`, never filled in from `games`.
     """
     from harness.feeds.espn import Kickoff          # function scope: no import-time model graph
 
-    lower = since if since is not None else at - KICKOFF_ASOF_LOOKBACK
-    rows = session.execute(_KICKOFF_ASOF, {"since": lower, "at": at, "sport": sport}).all()
+    rows = _kickoff_rows(session, at=at, sport=sport, variant_ids=variant_ids, since=since)
+    # `status` is today's status, overwritten in place exactly as `kickoff_utc` is (I6), so it
+    # is left empty rather than carried: `interval_for` reads neither it nor home/away.
     return sorted((Kickoff(sport=row.sport, espn_event_id=str(row.espn_event_id or ""),
-                           kickoff_utc=row.kickoff_utc, home="", away="", status=row.status)
+                           kickoff_utc=row.kickoff_utc, home="", away="", status="")
                    for row in rows), key=lambda k: (k.kickoff_utc, k.espn_event_id))
 
 
@@ -304,11 +345,13 @@ _STREAM_SQL: dict[str, str] = {
                 "target_contracts, edge, edge_min, fair_p, game_id, kickoff_utc, stake, "
                 "signal_created_at, created_at from intents "
                 "where created_at >= :start and created_at <= :end "
-                "and variant_id = any(:variant_ids) order by created_at, id"),
+                "and variant_id = any(:variant_ids) and replay = false "
+                "order by created_at, id"),
     # ix_orders_key_placed (variant_id, venue_market_id, side, placed_at)
     "orders": ("select id, intent_id, variant_id, ticker, venue_market_id, side, prob, "
                "contracts, filled_contracts, status, placed_at, expiry, cancelled_at, "
-               "cancel_reason, queue_ahead_at_place, kickoff_utc, game_id, sport, config_hash "
+               "cancel_reason, queue_ahead_at_place, kickoff_utc, game_id, sport, config_hash, "
+               "nw_executor_version "
                "from orders where placed_at >= :start and placed_at <= :end "
                "and replay = false and variant_id = any(:variant_ids) order by placed_at, id"),
     # ix_order_events_order_ts (order_id, ts): bounded by the ids the orders stream just wrote.
@@ -318,7 +361,8 @@ _STREAM_SQL: dict[str, str] = {
     # ix_fills_filled_at (filled_at)
     "fills": ("select id, order_id, prob, contracts, fee, filled_at, fill_method, "
               "source_trade_id, source_event_id, taker_side, through, tape_source "
-              "from fills where filled_at >= :start and filled_at <= :end order by filled_at, id"),
+              "from fills where filled_at >= :start and filled_at <= :end "
+              "and replay = false order by filled_at, id"),
     # ix_metric_samples_name_ts (name, ts desc). C1: these are samples, not loops.
     "loop_instants": ("select id, ts, value, labels from metric_samples "
                       "where name = 'exec.loop_ms' and ts >= :start and ts <= :end order by ts"),
@@ -332,6 +376,27 @@ _STREAM_SQL: dict[str, str] = {
 }
 
 _HEARTBEAT = text("select last_loop_ms from exec_heartbeat where id = 1")   # one row, by pk
+
+#: The subscriptions the slice's tickers were carried on. A `gap` row carries `ticker = \'\'`
+#: (§0.12) and is keyed by sid alone, so the sids the gaps stream is bounded by come from the
+#: window's rows for these tickers -- not only from the snapshots the books stream happened to
+#: write, which is a narrower set whenever a subscription produced deltas but no snapshot.
+_SUBSCRIPTION_SIDS = text(
+    "select distinct sid from orderbook_events where ticker = any(:tickers) "
+    "and ts >= :start and ts <= :end")                                          # ix_obe_ticker_ts
+
+#: The games the slice's markets belong to: the denominator of §1.3(a)'s as-of kickoff check.
+#: `venue_markets.ticker` is unique, so this is a key lookup per ticker plus the games pk.
+_SLICE_GAMES = text(
+    "select distinct g.id, g.sport from venue_markets m join games g on g.id = m.game_id "
+    "where m.ticker = any(:tickers) and m.game_id is not null")                 # uq_venue_market
+
+#: §1.2/§2: a slice may not silently cross an executor or configuration boundary. The distinct
+#: pairs in the window, on the same access path the orders stream uses.
+_VERSION_SPAN = text(
+    "select distinct config_hash, nw_executor_version from orders "
+    "where variant_id = any(:variant_ids) "
+    "  and placed_at >= :start and placed_at <= :end and replay = false")   # ix_orders_key_placed
 
 #: The two streams that dominate the capture's size (§2's disk-cost note): the projection is
 #: taken from their counts alone, and deliberately before the first byte is written.
@@ -379,17 +444,41 @@ def projected_bytes(session: Session, *, tickers: Sequence[str], warmup_start: d
     return rows * AVG_NDJSON_BYTES
 
 
+@dataclass(frozen=True, slots=True)
+class CaptureResult:
+    """One slice's output: the per-stream digests, the limitations it must carry, and the
+    manifest entry §1.2 hashes the run against.
+
+    `capture_hashes` is exactly the dict `Manifest.capture_hashes` takes -- one entry per
+    stream, each carrying the digest **and** the statement and bound parameters that produced
+    it -- so a later run can evaluate `capture_hash_mismatch` against what was actually read
+    rather than against a digest whose query nobody recorded.
+    """
+
+    hashes: dict[str, str]
+    limitations: list[Limitation]
+    capture_hashes: dict[str, dict]
+    manifest_json: str
+
+
 def capture_slice(s: Settings, session: Session, *, run_id: str, warmup_start: datetime,
                   observation_end: datetime, tickers: Sequence[str],
-                  variant_ids: Sequence[str]) -> tuple[dict[str, str], list[Limitation]]:
-    """Write the slice to `/srv/sports-harness/exp/<run_id>/` and return `(hashes, limitations)`.
+                  variant_ids: Sequence[str], instants: int,
+                  live_estimate: int) -> CaptureResult:
+    """Write the slice to `/srv/sports-harness/exp/<run_id>/` and return its `CaptureResult`.
 
-    One NDJSON file per stream, each hashed with sha256 for the manifest. The size ceiling is
-    enforced **before the first write**, every stream is walked in batches of `exp_batch_rows`
-    on a server-side cursor, and the executor's own heartbeat is re-read between batches.
+    One NDJSON file per stream, each hashed with sha256 for the manifest. The size ceiling and
+    the executor-version span are both checked **before the first write**, every stream is
+    walked in batches of `exp_batch_rows` on a server-side cursor, and the executor's own
+    heartbeat is re-read between batches.
+
+    `instants` and `live_estimate` are the caller's resolved clock (C1): they are recorded in
+    the run's `loop_spacing_unreconstructable` row, so no run persists a zeroed one.
     """
     if observation_end <= warmup_start:
         raise ValueError("observation_end must be after warmup_start")
+    if not variant_ids:
+        raise ValueError("a slice names the variants it is the capture of")
     ceiling = s.exp_capture_max_gb * 1024 ** 3
     projected = projected_bytes(session, tickers=tickers, warmup_start=warmup_start,
                                 observation_end=observation_end)
@@ -397,36 +486,85 @@ def capture_slice(s: Settings, session: Session, *, run_id: str, warmup_start: d
         raise CaptureRefused(
             f"projected capture {projected / 1024 ** 3:.1f} GB exceeds exp_capture_max_gb="
             f"{s.exp_capture_max_gb}; narrow the slice (§2). Nothing was written.")
-    now = datetime.now(tz=warmup_start.tzinfo)
-    limitations = [spacing_limitation(
-        run_id, warmup_start=warmup_start, observation_end=observation_end, instants=0,
-        live_estimate=0, now=now)]
-    directory = run_dir(s, run_id)
-    bounds = {"start": warmup_start, "end": observation_end, "tickers": list(tickers),
+    window = {"start": warmup_start, "end": observation_end, "tickers": list(tickers),
               "variant_ids": list(variant_ids)}
+    # §2: a slice that spans two executor builds or two configurations is **refused**, not
+    # labelled: every number downstream is attributed to one executor, and the reader of a
+    # mixed slice has no way to split it back. The refusal names the values it found.
+    spans = [(row.config_hash, row.nw_executor_version)
+             for row in session.execute(_VERSION_SPAN, window).all()]
+    configs = {config for config, _version in spans if config is not None}
+    versions = {version for _config, version in spans if version is not None}
+    if len(configs) > 1 or len(versions) > 1:
+        raise CaptureRefused(
+            f"the slice spans {len(configs)} config_hash and {len(versions)} "
+            f"nw_executor_version values ({sorted(configs)}, {sorted(map(str, versions))}); "
+            "a capture may not cross an executor or configuration boundary silently (§2). "
+            "Nothing was written.")
+    now = datetime.now(tz=warmup_start.tzinfo)
+    limitations = [
+        spacing_limitation(run_id, warmup_start=warmup_start, observation_end=observation_end,
+                           instants=instants, live_estimate=live_estimate, now=now),
+        availability_limitation(run_id, streams=AVAILABILITY_PROXY_STREAMS, now=now),
+        *_kickoff_limitations(session, run_id=run_id, warmup_start=warmup_start,
+                              observation_end=observation_end, tickers=tickers,
+                              variant_ids=variant_ids, now=now)]
+    directory = run_dir(s, run_id)
     # `fairs` is bounded by the slice's market ids, and it is written before the `orders` and
     # `intents` streams that would otherwise supply them, so the ids are resolved up front from
     # the tickers the caller named (`venue_markets.ticker` is unique, so this is a key lookup).
     market_ids = [row.id for row in session.execute(
         text("select id from venue_markets where ticker = any(:tickers)"),
         {"tickers": list(tickers)}).all()]
-    context: dict[str, list] = {"sids": [], "order_ids": [], "game_ids": [],
+    # The same for the sids: a gap belongs to a subscription, not to a ticker, so the slice's
+    # own subscriptions are read here and the books stream only adds to them.
+    sids = [row.sid for row in session.execute(_SUBSCRIPTION_SIDS, window).all()
+            if row.sid is not None]
+    context: dict[str, list] = {"sids": sorted(set(sids)), "order_ids": [], "game_ids": [],
                                 "market_ids": sorted(market_ids)}
     hashes: dict[str, str] = {}
+    entries: dict[str, dict] = {}
     for stream in CAPTURE_STREAMS:
-        params = bounds | {key: context[key] for key in
-                           ("sids", "order_ids", "game_ids", "market_ids")}
+        sql = _STREAM_SQL[stream]
+        available = window | {key: context[key] for key in
+                              ("sids", "order_ids", "game_ids", "market_ids")}
+        # Exactly the parameters this statement binds -- the pair (sql, params) is what the
+        # manifest records, so the digest below is attributable to a readable query.
+        params = {key: value for key, value in available.items() if f":{key}" in sql}
         digest = hashlib.sha256()
         path = directory / f"{stream}.ndjson"
         with path.open("wb") as handle:
-            for rows in _batches(session, s, _STREAM_SQL[stream], params):
+            for rows in _batches(session, s, sql, params):
                 body = _ndjson(rows)
                 digest.update(body)
                 handle.write(body)
                 _collect(stream, rows, context)
         hashes[stream] = digest.hexdigest()
+        entries[stream] = {"sha256": hashes[stream], "sql": sql, "params": params}
         log.info("exp capture stream=%s sha256=%s", stream, hashes[stream][:12])
-    return hashes, limitations
+    return CaptureResult(hashes=hashes, limitations=limitations, capture_hashes=entries,
+                         manifest_json=capture_manifest_entries(entries))
+
+
+def _kickoff_limitations(session: Session, *, run_id: str, warmup_start: datetime,
+                         observation_end: datetime, tickers: Sequence[str],
+                         variant_ids: Sequence[str], now: datetime) -> list[Limitation]:
+    """One `kickoff_not_asof` row per game of the slice with no frozen kickoff (I3/I6).
+
+    The games of the slice are its markets' games; the games whose kickoff *is* reconstructible
+    are those a decision row inside the window froze one for. The difference is labelled and
+    never filled in from `games.kickoff_utc`, which is overwritten in place.
+    """
+    games = session.execute(_SLICE_GAMES, {"tickers": list(tickers)}).all()
+    if not games:
+        return []
+    covered: set[int] = set()
+    for sport in sorted({row.sport for row in games if row.sport}):
+        covered |= {row.game_id for row in _kickoff_rows(
+            session, at=observation_end, sport=sport, variant_ids=variant_ids,
+            since=warmup_start)}
+    return [kickoff_limitation(run_id, game_id=row.id, now=now)
+            for row in sorted(games, key=lambda g: g.id) if row.id not in covered]
 
 
 def _batches(session: Session, s: Settings, sql: str, params: dict) -> Iterator[list]:
@@ -463,9 +601,15 @@ def _collect(stream: str, rows: Sequence, context: dict[str, list]) -> None:
                                        | set(context["market_ids"]))
 
 
-def capture_manifest_entries(hashes: dict[str, str]) -> str:
-    """The canonical JSON of the stream hashes, as it enters the manifest (§1.2)."""
-    return canonical_json({"streams": dict(sorted(hashes.items())),
+def capture_manifest_entries(entries: dict[str, dict]) -> str:
+    """The canonical JSON of the capture's manifest entry, as it enters `Manifest` (§1.2).
+
+    Serialised with the manifest's own `canonical_json`, which is the one serialisation the
+    run hash is taken over: the same dict handed to `Manifest.capture_hashes` hashes to the
+    same string here, so `capture_hash_mismatch` is evaluated against the statement and the
+    parameters, not against a bare digest.
+    """
+    return canonical_json({"streams": dict(sorted(entries.items())),
                            "timestamp_semantics": TIMESTAMP_SEMANTICS})
 
 

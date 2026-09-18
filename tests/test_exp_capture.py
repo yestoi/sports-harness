@@ -20,7 +20,7 @@ def _market(session, *, ticker="KXNFLGAME-1", game_id=None):
 
     market = VenueMarket(venue="kalshi", ticker=ticker, event_ticker="KXNFLGAME",
                          series_ticker="KXNFLGAME", game_id=game_id, market_type="moneyline",
-                         match_status="confident", first_seen_raw_id=1, last_seen_at=NOW)
+                         match_status="matched", first_seen_raw_id=1, last_seen_at=NOW)
     session.add(market)
     session.flush()
     return market
@@ -169,9 +169,11 @@ def test_a_kickoff_revised_after_the_decision_never_reaches_the_cadence(db_sessi
     _seed_intent(db_session, game_id=game_id, created_at=NOW - timedelta(minutes=5),
                  kickoff_utc=datetime(2026, 9, 20, 17, 0, tzinfo=timezone.utc))
     db_session.commit()
-    [kickoff] = kickoffs_asof(db_session, at=NOW, sport="nfl")
+    [kickoff] = kickoffs_asof(db_session, at=NOW, sport="nfl", variant_ids=[VARIANT])
     assert kickoff.kickoff_utc == datetime(2026, 9, 20, 17, 0, tzinfo=timezone.utc)
     assert kickoff.sport == "nfl"            # a `Kickoff` row, which is what interval_for takes
+    # Today's `games.status` is as overwritten as today's kickoff: it is left empty, not carried.
+    assert kickoff.status == "" and kickoff.home == "" and kickoff.away == ""
 
 
 def test_an_unreconstructable_kickoff_is_labelled_not_guessed(db_session):
@@ -181,7 +183,7 @@ def test_an_unreconstructable_kickoff_is_labelled_not_guessed(db_session):
     # snapshot, so there is nothing to reconstruct and nothing is invented.
     game_id = _seed_game(db_session, kickoff=datetime(2026, 9, 20, 17, 0, tzinfo=timezone.utc))
     db_session.commit()
-    assert kickoffs_asof(db_session, at=NOW, sport="nfl") == []
+    assert kickoffs_asof(db_session, at=NOW, sport="nfl", variant_ids=[VARIANT]) == []
     lim = kickoff_limitation("run-1", game_id=game_id, now=NOW)
     assert lim.kind == "kickoff_not_asof" and lim.scope["game_id"] == game_id
 
@@ -214,9 +216,10 @@ def test_the_capture_writes_one_hashed_ndjson_file_per_stream(db_session, env_se
 
     _seed_actions(db_session)
     settings = env_settings.model_copy(update={"exp_dir": tmp_path, "exp_batch_rows": 2})
-    hashes, limitations = capture_slice(
+    result = capture_slice(
         settings, db_session, run_id="run-1", warmup_start=START, observation_end=END,
-        tickers=["KXNFLGAME-1"], variant_ids=[VARIANT])
+        tickers=["KXNFLGAME-1"], variant_ids=[VARIANT], instants=6, live_estimate=3575)
+    hashes = result.hashes
     assert set(hashes) == set(CAPTURE_STREAMS)
     assert all(len(digest) == 64 for digest in hashes.values())
     written = sorted(p.name for p in (tmp_path / "run-1").glob("*.ndjson"))
@@ -225,7 +228,14 @@ def test_the_capture_writes_one_hashed_ndjson_file_per_stream(db_session, env_se
     orders = (tmp_path / "run-1" / "orders.ndjson").read_text().splitlines()
     assert len(orders) == 1 and '"placed_at": "2026-09-16T12:00:03+00:00"' in orders[0]
     assert (tmp_path / "run-1" / "prints.ndjson").read_text() == ""
-    assert [lim.kind for lim in limitations] == ["loop_spacing_unreconstructable"]
+    # The slice's one game has a frozen kickoff on its intent, so no `kickoff_not_asof` row;
+    # the three event-time streams are named once, by the run, as a proxy availability.
+    assert [lim.kind for lim in result.limitations] == ["loop_spacing_unreconstructable",
+                                                        "availability_unreconstructable"]
+    # Minor 1: the clock the caller resolved is what the run records, never a zero.
+    spacing = result.limitations[0]
+    assert spacing.scope["instants"] == 6 and spacing.scope["live_loop_estimate"] == 3575
+    assert result.limitations[1].scope["streams"] == ["books", "deltas", "prints"]
 
 
 def test_a_capture_larger_than_its_ceiling_is_refused_before_the_first_write(db_session,
@@ -247,5 +257,83 @@ def test_a_capture_larger_than_its_ceiling_is_refused_before_the_first_write(db_
     settings = env_settings.model_copy(update={"exp_dir": tmp_path, "exp_capture_max_gb": 0})
     with pytest.raises(CaptureRefused):
         capture_slice(settings, db_session, run_id="run-2", warmup_start=START,
-                      observation_end=END, tickers=["KXNFLGAME-1"], variant_ids=[VARIANT])
+                      observation_end=END, tickers=["KXNFLGAME-1"], variant_ids=[VARIANT],
+                      instants=6, live_estimate=3575)
     assert list(tmp_path.glob("run-2/*.ndjson")) == []
+
+
+def test_a_game_with_no_frozen_kickoff_is_labelled_by_the_capture(db_session, env_settings,
+                                                                  tmp_path):
+    """I3/I6 at slice scope: the games of the slice that no decision row froze a kickoff for.
+
+    The second market's game was never decided on inside the window, so `games.kickoff_utc` is
+    the only kickoff it has -- and that column is overwritten in place. It is labelled.
+    """
+    from harness.experiments.execution_viability.capture import capture_slice
+
+    _seed_actions(db_session)
+    orphan = _seed_game(db_session, kickoff=datetime(2026, 9, 20, 17, 0, tzinfo=timezone.utc),
+                        espn_event_id="4018")
+    _market(db_session, ticker="KXNFLGAME-2", game_id=orphan)
+    db_session.commit()
+    settings = env_settings.model_copy(update={"exp_dir": tmp_path})
+    result = capture_slice(settings, db_session, run_id="run-3", warmup_start=START,
+                           observation_end=END, tickers=["KXNFLGAME-1", "KXNFLGAME-2"],
+                           variant_ids=[VARIANT], instants=6, live_estimate=3575)
+    kickoff_rows = [lim for lim in result.limitations if lim.kind == "kickoff_not_asof"]
+    assert [lim.scope["game_id"] for lim in kickoff_rows] == [orphan]
+    assert any(lim.kind == "availability_unreconstructable" for lim in result.limitations)
+
+
+def test_a_slice_spanning_two_executor_versions_is_refused_before_the_first_write(db_session,
+                                                                                  env_settings,
+                                                                                  tmp_path):
+    """\u00a72: a capture may not cross an executor boundary silently. This run refuses."""
+    from harness.db.models import Order
+    from harness.experiments.execution_viability.capture import CaptureRefused, capture_slice
+
+    _seed_actions(db_session)
+    first = db_session.query(Order).one()
+    first.nw_executor_version = Decimal("1")
+    db_session.add(Order(intent_id=first.intent_id, variant_id=VARIANT, venue="kalshi",
+                         client_order_id="prod-2", ticker=first.ticker,
+                         venue_market_id=first.venue_market_id, side="yes",
+                         prob=Decimal("0.4800"), contracts=Decimal("20"), status="cancelled",
+                         placed_at=datetime(2026, 9, 16, 12, 2, tzinfo=timezone.utc),
+                         cancelled_at=datetime(2026, 9, 16, 12, 3, tzinfo=timezone.utc),
+                         game_id=first.game_id, sport="nfl", replay=False,
+                         nw_executor_version=Decimal("2")))
+    db_session.commit()
+    settings = env_settings.model_copy(update={"exp_dir": tmp_path})
+    with pytest.raises(CaptureRefused) as raised:
+        capture_slice(settings, db_session, run_id="run-4", warmup_start=START,
+                      observation_end=END, tickers=["KXNFLGAME-1"], variant_ids=[VARIANT],
+                      instants=6, live_estimate=3575)
+    assert "nw_executor_version" in str(raised.value)
+    assert list(tmp_path.glob("run-4/*.ndjson")) == []
+
+
+def test_the_manifest_entry_carries_each_streams_statement_and_bound_params(db_session,
+                                                                           env_settings,
+                                                                           tmp_path):
+    """\u00a71.2: the digest alone cannot be re-evaluated; the query that produced it can."""
+    import json
+
+    from harness.experiments.execution_viability.capture import capture_slice
+
+    _seed_actions(db_session)
+    settings = env_settings.model_copy(update={"exp_dir": tmp_path})
+    result = capture_slice(settings, db_session, run_id="run-5", warmup_start=START,
+                           observation_end=END, tickers=["KXNFLGAME-1"],
+                           variant_ids=[VARIANT], instants=6, live_estimate=3575)
+    orders = result.capture_hashes["orders"]
+    assert orders["sha256"] == result.hashes["orders"]
+    assert "variant_id = any(:variant_ids)" in orders["sql"] and "replay = false" in orders["sql"]
+    # Exactly the parameters that statement binds -- no `sids`, which it does not name.
+    assert set(orders["params"]) == {"start", "end", "variant_ids"}
+    assert orders["params"]["variant_ids"] == [VARIANT]
+    assert set(result.capture_hashes["games"]["params"]) == {"game_ids"}
+    # The entry goes through the manifest's own serialisation, and reads back as it went in.
+    streams = json.loads(result.manifest_json)["streams"]
+    assert streams["orders"]["params"]["start"] == START.isoformat()
+    assert set(streams) == set(CAPTURE_STREAMS)

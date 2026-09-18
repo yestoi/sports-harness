@@ -12,6 +12,13 @@ adapter only carries the arm's own orders between instants and turns the shared 
 results into records. Where a step would need a decision the shared functions do not expose, the
 task stops and reports rather than writing a second implementation.
 
+One dependency is named here because it is the module's only reach into a production
+implementation detail: `_market_now` reuses `policy._market_now` (a private function of
+`harness/execution/policy.py`) for the row-to-`MarketNow` field mapping, and adds the two
+things that comparison states it does not carry -- the rebuilt book and the recorded dirty
+verdict. If that function's signature or field mapping changes, this adapter changes with it;
+T3/T4 must not copy the mapping instead.
+
 Two properties are structural rather than asserted:
 
 * **No lookahead.** Every read is taken at the instant (`at=instant`), so nothing taped after it
@@ -27,6 +34,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -54,8 +62,9 @@ CANCEL_POLICY = fills_mod.AHEAD
 #: recomputed. Bounded by the markets of the step and the instant, on
 #: `ix_mdi_market_started (venue_market_id, started_at)`.
 _DIRTY_AT = text(
-    "select 1 from market_dirty_intervals where venue_market_id = any(:ids) "
-    "and started_at <= :instant and (ended_at is null or ended_at >= :instant) limit 1")
+    "select distinct venue_market_id from market_dirty_intervals "
+    "where venue_market_id = any(:ids) "
+    "and started_at <= :instant and (ended_at is null or ended_at >= :instant)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +89,12 @@ class ArmWorld:
 
     open_orders: list = field(default_factory=list)          # list[plan.OpenOrderView]
     positions: list = field(default_factory=list)            # list[plan.PositionView]
+    #: Derived, never appended to directly: `ArmRunner.step` rebuilds it from `fill_log` at the
+    #: local midnight of the instant being stepped, so it is *today's* fills at that instant.
     fills_today: list = field(default_factory=list)          # list[plan.FillView]
+    #: Every fill the arm has taken, with the stamp the day boundary is applied to:
+    #: `(filled_at, variant_id, stake)`. `FillView` carries no time of its own.
+    fill_log: list = field(default_factory=list)
     paper: dict = field(default_factory=dict)                # order_id -> fills.PaperOrder
     sim: dict = field(default_factory=dict)                  # order_id -> fills.SimState
     deadlines: dict = field(default_factory=dict)            # order_id -> the arm's own deadline
@@ -99,7 +113,7 @@ class ArmRunner:
 
     def __init__(self, *, run_id: str, arm_id: str, policy, variant_cfg: dict[str, dict],
                  exec_settings, walkers: dict | None = None,
-                 world: ArmWorld | None = None) -> None:
+                 world: ArmWorld | None = None, tz: str | None = None) -> None:
         self.run_id = run_id
         self.arm_id = arm_id
         # §1.6: the arms differ only in the policy argument and in which observations they may
@@ -114,8 +128,14 @@ class ArmRunner:
         #: on every call, which row 86 measured at 233 ms per reconstruction. Missing tickers are
         #: added as they are met, so a caller may pass none at all.
         self.walkers: dict = dict(walkers or {})
+        #: The zone the daily cap's day boundary is taken in (`store.local_midnight`, amendment
+        #: 2). `ExecSettings` carries no timezone, so a caller holding only that one passes it.
+        self.tz = ZoneInfo(tz or getattr(exec_settings, "tz_local", None) or "America/Chicago")
         self.world = world if world is not None else ArmWorld()
         self._market_ids: set[int] = set()
+        #: order_id -> its market, kept for the step in which an order is closed: the view is
+        #: gone from `open_orders` by then and a fill of that step still has to name its market.
+        self._order_markets: dict[int, int] = {}
 
     # --- world ---------------------------------------------------------------------
 
@@ -149,6 +169,7 @@ class ArmRunner:
         self.world.sim[view.order_id] = fills_mod.SimState.initial(paper)
         self.world.deadlines[view.order_id] = paper.expiry
         self._market_ids.add(view.venue_market_id)
+        self._order_markets[view.order_id] = view.venue_market_id
         return view.order_id
 
     # --- one instant ---------------------------------------------------------------
@@ -160,6 +181,7 @@ class ArmRunner:
 
     def step(self, session: Session, instant: datetime) -> StepResult:
         """§1.3(c)'s call order, with the arm's own world at every point."""
+        self._roll_day(instant)
         known = {view.venue_market_id for view in self.world.open_orders} | self._market_ids
         markets_rows = store.market_rows(session, known, at=instant)
         lower = instant - timedelta(seconds=self.exec_settings.intent_ttl_s)
@@ -174,7 +196,12 @@ class ArmRunner:
             markets_rows |= store.market_rows(session, fresh, at=instant)
         self._market_ids |= {view.venue_market_id for view in intents}
 
-        markets = {market_id: self._market_now(session, row, instant)
+        # The loop's own recorded verdict about these books at this instant, read before the
+        # markets are built so it is an **input** to the decision (`MarketNow.book_dirty`) and
+        # not only a label on the result.
+        dirty_ids = self._dirty_ids(session, sorted(markets_rows), instant)
+        markets = {market_id: self._market_now(session, row, instant,
+                                               book_dirty=market_id in dirty_ids)
                    for market_id, row in markets_rows.items()}
         variants = {view.variant_id for view in intents} | {
             view.variant_id for view in self.world.open_orders}
@@ -189,7 +216,19 @@ class ArmRunner:
         filled = self._simulate(session, markets, instant, closing)
         return StepResult(instant=instant, actions=tuple(records), fills=tuple(filled),
                           open_orders=tuple(self._resting()),
-                          dirty=self._dirty(session, markets, instant))
+                          dirty=self._dirty(markets, instant, dirty_ids))
+
+    def _roll_day(self, instant: datetime) -> None:
+        """Drop the fills of previous local days before the caps are rebuilt (amendment 2).
+
+        `rebuild_state` sums `fills_today` into `daily_exposure`, so an arm that never pruned
+        would carry yesterday's stake into today's daily cap and refuse placements the live
+        executor made. The boundary is `store.local_midnight`, the executor's own.
+        """
+        midnight = store.local_midnight(instant, self.tz)
+        self.world.fill_log = [row for row in self.world.fill_log if row[0] >= midnight]
+        self.world.fills_today = [plan_mod.FillView(variant_id=variant, stake=stake)
+                                  for _ts, variant, stake in self.world.fill_log]
 
     # --- the shared functions' inputs ------------------------------------------------
 
@@ -199,28 +238,43 @@ class ArmRunner:
             walker = self.walkers[ticker] = book_mod.BookWalker(session, ticker)
         return walker
 
-    def _market_now(self, session: Session, row, instant: datetime):
+    def _market_now(self, session: Session, row, instant: datetime, *,
+                    book_dirty: bool = False):
         """The market as this arm sees it at `instant`, with the ladder the walker rebuilt.
 
         The field mapping is `policy._market_now`'s, reused rather than copied: a second copy of
-        it would be free to drift from the one the policy comparison reads. The one thing added
-        here is the book, which that comparison states it does not rebuild.
+        it would be free to drift from the one the policy comparison reads. Two things are added
+        here, both of which that comparison states it does not carry: the rebuilt book, and the
+        loop's own recorded dirty verdict, which `MarketNow.dirty` reads as `book_dirty` and
+        which is a **shared input** to the decision under §1.3(c).
         """
         market = policy_mod._market_now(row)
-        return replace(market, book=self._walker(session, row.ticker).at(instant))
+        return replace(market, book=self._walker(session, row.ticker).at(instant),
+                       book_dirty=book_dirty)
 
-    def _dirty(self, session: Session, markets: dict, instant: datetime) -> bool:
+    def _dirty_ids(self, session: Session, ids: Sequence[int], instant: datetime) -> set[int]:
+        """The step's markets inside a recorded dirty interval at the instant.
+
+        `market_dirty_intervals` is the loop's own record of when a book could not be trusted
+        (models.py:1010), read here rather than recomputed, bounded by the markets of the step
+        and the instant on `ix_mdi_market_started (venue_market_id, started_at)`.
+        """
+        if not ids:
+            return set()
+        return {row.venue_market_id for row in
+                session.execute(_DIRTY_AT, {"ids": list(ids), "instant": instant}).all()}
+
+    def _dirty(self, markets: dict, instant: datetime, dirty_ids: set[int]) -> bool:
         """Was any of the step's markets untrustworthy at the instant?
 
         Two sources, both the loop's own: the book's verdict about itself (`MarketNow.dirty`,
-        which is F36's rule, not a new one) and the recorded dirty interval covering the instant.
+        which is F36's rule, not a new one) and the recorded dirty interval covering the
+        instant. The second is kept even where there is no book to apply it to, because a
+        market with no book is not `MarketNow.dirty` (R10) and the interval still happened.
         """
         if any(market.dirty(instant, self.exec_settings) for market in markets.values()):
             return True
-        ids = sorted(markets)
-        if not ids:
-            return False
-        return session.execute(_DIRTY_AT, {"ids": ids, "instant": instant}).first() is not None
+        return bool(dirty_ids)
 
     # --- bookkeeping (the arm's own world, never a rule) -------------------------------
 
@@ -276,6 +330,7 @@ class ArmRunner:
         self.world.paper[order_id] = paper
         self.world.sim[order_id] = fills_mod.SimState.initial(paper)
         self.world.deadlines[order_id] = action.expiry
+        self._order_markets[order_id] = view.venue_market_id
         return {"kind": "place", "instant": instant, "status": "open", "order_id": order_id,
                 "intent_id": intent.intent_id, "variant_id": intent.variant_id,
                 "venue_market_id": view.venue_market_id, "ticker": view.ticker,
@@ -321,7 +376,9 @@ class ArmRunner:
                                               FILL_METHOD, cancel_policy=CANCEL_POLICY)
             self.world.sim[order_id] = result.state
             for fill in result.fills:
-                out.append({"order_id": order_id, "instant": instant,
+                out.append({"kind": "fill", "order_id": order_id, "instant": instant,
+                            "venue_market_id": self._market_of(order_id),
+                            "side": paper.side, "ticker": paper.ticker,
                             "filled_at": fill.filled_at, "contracts": fill.contracts,
                             "prob": fill.prob, "fee": fill.fee, "fill_method": fill.fill_method,
                             "source_trade_id": fill.source_trade_id, "through": fill.through,
@@ -336,7 +393,7 @@ class ArmRunner:
         view = self.world.order(order_id)
         if view is not None:
             return view.venue_market_id
-        return None
+        return self._order_markets.get(order_id)
 
     def _book_fills(self, order_id: int, result) -> None:
         """Carry the simulator's own filled total onto the arm's view of the order."""
@@ -347,6 +404,9 @@ class ArmRunner:
         self.world.open_orders = [
             replace(row, filled_contracts=filled) if row.order_id == order_id else row
             for row in self.world.open_orders]
+        for fill in result.fills:
+            self.world.fill_log.append((fill.filled_at, view.variant_id,
+                                        fill.contracts * fill.prob))
         stake = sum((fill.contracts * fill.prob for fill in result.fills), ZERO)
         self.world.fills_today.append(plan_mod.FillView(variant_id=view.variant_id, stake=stake))
 

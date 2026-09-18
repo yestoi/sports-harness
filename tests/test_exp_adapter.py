@@ -240,7 +240,8 @@ def test_a_cancel_replacement_chain_matches_the_hand_written_transition_table(db
 
 
 def test_one_partial_fill_leaves_the_remainder_resting_with_its_queue_position(db_session,
-                                                                              env_settings):
+                                                                              env_settings,
+                                                                              monkeypatch):
     # The tape prints 12 contracts at 0.48 at 12:00:05, taken from the other side, against an
     # order of 20 that joined with 5 contracts ahead of it: 5 of the print clears the queue and
     # the remaining 7 are ours, leaving 13 resting at the front of the queue.
@@ -255,8 +256,17 @@ def test_one_partial_fill_leaves_the_remainder_resting_with_its_queue_position(d
     db_session.commit()
     runner = _runner(env_settings)
     runner.adopt(order, queue_ahead=Decimal("5"))
+    prints_at = _recording(monkeypatch, "load_prints")
+    deltas_at = _recording(monkeypatch, "load_deltas")
     [result] = runner.run(db_session, [NOW + STEP])
     assert sum(f["contracts"] for f in result.fills) == Decimal("7")   # 12 printed - 5 ahead
+    # The tape the simulator is handed is read at the instant as well: a print taped after
+    # 12:00:15 is not in the list this step filled from (§1.3b, no lookahead).
+    assert [kw["at"] for kw in prints_at] == [NOW + STEP]
+    assert [kw["at"] for kw in deltas_at] == [NOW + STEP]
+    # The fill record names what the tape is paired on: its market and side (§1.3f).
+    assert result.fills[0]["venue_market_id"] == market.id
+    assert result.fills[0]["side"] == "yes" and result.fills[0]["kind"] == "fill"
     resting = result.open_orders[0]
     assert resting["contracts"] == Decimal("13") and resting["queue_ahead"] == Decimal("0")
 
@@ -299,3 +309,66 @@ def test_a_delayed_loop_does_not_move_a_deadline(db_session, env_settings):
     [result] = runner.run(db_session, [NOW + timedelta(seconds=310)])
     assert result.actions[-1]["kind"] == "expire"
     assert result.actions[-1]["deadline"] == NOW + timedelta(seconds=220)
+
+
+def test_an_instant_inside_a_recorded_dirty_interval_places_nothing(db_session, env_settings):
+    """\u00a71.3(c): the loop's own dirty verdict is an **input** to the decision.
+
+    `market_dirty_intervals` is what the live loop recorded about this book; at an instant it
+    covers, the executor's F36 rule skips the intent rather than pricing against a book it
+    could not trust. The arm reads the same record and reaches the same skip -- it does not
+    recompute dirtiness, and it does not place and then label the result.
+    """
+    market = _market(db_session, game_id=_game(db_session).id)
+    _priced(db_session, market, at=NOW - timedelta(seconds=30))
+    _rest_book(db_session, market, fetched_at=NOW - timedelta(seconds=10))
+    _intent(db_session, market, created_at=NOW - timedelta(minutes=5))
+    db_session.add(MarketDirtyInterval(venue_market_id=market.id, ticker=TICKER,
+                                       started_at=NOW - timedelta(seconds=5), ended_at=None,
+                                       cause="ws_gap", replay=False))
+    db_session.commit()
+    [inside] = _runner(env_settings).run(db_session, [NOW])
+    assert [(a["kind"], a.get("reason")) for a in inside.actions] == [("skip", "book_dirty")]
+    assert inside.dirty is True and inside.open_orders == ()
+    # The same fixture one interval later: the book is trusted again and the intent is placed.
+    [after] = _runner(env_settings).run(db_session, [NOW - timedelta(seconds=10)])
+    assert [a["kind"] for a in after.actions] == ["place"]
+
+
+def test_the_previous_days_fills_leave_the_daily_exposure_at_local_midnight(db_session,
+                                                                            env_settings):
+    """Amendment 2: the daily cap's day is the local day, and yesterday's fills are not in it.
+
+    Hand-written from the fixture: an order of 20 contracts at 0.48 (stake 9.60) resting from
+    23:00 CT, and a print of 12 at 0.48 at 23:00:05 CT that fills 12 of it (stake 5.76). At
+    23:00:15 CT the day's exposure is 9.60 + 5.76 = 15.36; at 07:00 CT the next morning the
+    fill belongs to yesterday and the exposure is the resting order's 9.60 alone.
+    """
+    from harness.execution.plan import rebuild_state
+
+    caps = {"v_base": {**VARIANT_CFG["v_base"], "apply_caps": True}}
+    late = datetime(2026, 9, 16, 4, 0, tzinfo=timezone.utc)        # 23:00 CT the evening before
+    first, second = late + STEP, datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)
+    market = _market(db_session, game_id=_game(db_session).id)
+    _priced(db_session, market, at=late - timedelta(seconds=30))
+    # The next morning's own pricing: without it the resting order is cancelled for
+    # `fair_stale` at 07:00 CT and the day boundary would never be the thing under test.
+    _priced(db_session, market, at=second - timedelta(seconds=30))
+    _rest_book(db_session, market, fetched_at=late - timedelta(seconds=10))
+    intent = _intent(db_session, market, created_at=late - timedelta(minutes=5))
+    order = _order(db_session, intent, market, placed_at=late,
+                   expiry=late + timedelta(hours=10))
+    _print(db_session, ts=late + timedelta(seconds=5), trade_id="t1", count="12")
+    db_session.commit()
+    runner = ArmRunner(run_id=RUN, arm_id="A", policy=None, variant_cfg=caps,
+                       exec_settings=env_settings, walkers={}, tz="America/Chicago")
+    runner.adopt(order, queue_ahead=Decimal("0"))
+    [evening] = runner.run(db_session, [first])
+    assert sum(f["contracts"] for f in evening.fills) == Decimal("12")
+    yesterday = rebuild_state(runner.world.open_orders, runner.world.positions,
+                              runner.world.fills_today, "v_base")
+    assert yesterday.daily_exposure == Decimal("15.36")
+    runner.run(db_session, [second])
+    today = rebuild_state(runner.world.open_orders, runner.world.positions,
+                          runner.world.fills_today, "v_base")
+    assert runner.world.fills_today == [] and today.daily_exposure == Decimal("9.60")
