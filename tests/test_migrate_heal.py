@@ -17,6 +17,7 @@ from contextlib import contextmanager
 import pytest
 from sqlalchemy import event, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 
 from harness.db.migrate import heal_invalid_indexes
 from migrations.env import BULK_TABLES
@@ -225,22 +226,28 @@ def _orders_intent_revision():
     return module
 
 
-def _run_upgrade(engine, module) -> None:
-    """The revision's `upgrade()` on a real connection, outside Alembic's runner.
+def _upgrade_on(conn, module) -> None:
+    """The revision's `upgrade()` on a connection the caller owns, outside Alembic's runner.
 
     `alembic.op` is a proxy to the current `Operations`, so a test can drive one revision and
     see what it does. No transaction may be open at entry: `autocommit_block` commits the one
-    it finds and asserts Alembic opened it.
+    it finds and asserts Alembic opened it. Taking the connection as an argument is what lets
+    the timeout tests below set the session values the release has and read them back after.
     """
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
 
+    assert not conn.in_transaction()
+    context = MigrationContext.configure(connection=conn,
+                                         opts={"transaction_per_migration": True})
+    with Operations.context(context):
+        module.upgrade()
+
+
+def _run_upgrade(engine, module) -> None:
+    """`_upgrade_on` on a connection of its own, for the tests that do not care which."""
     with engine.connect() as conn:
-        assert not conn.in_transaction()
-        context = MigrationContext.configure(connection=conn,
-                                             opts={"transaction_per_migration": True})
-        with Operations.context(context):
-            module.upgrade()
+        _upgrade_on(conn, module)
 
 
 def test_the_orders_intent_migration_passes_on_a_valid_index(_schema):
@@ -263,3 +270,111 @@ def test_the_orders_intent_migration_raises_when_the_build_left_the_index_invali
         assert "indisvalid" in str(error.value)
         # Failing closed, not repairing: the revision touches nothing after the raise.
         assert _valid(_schema, ORDERS_INTENT_INDEX) is False
+
+
+# --- fix 85 amendment (the user's ruling of 2026-09-18, second file, §1) ---------------------
+#
+# The bound that actually cancels a `CREATE INDEX CONCURRENTLY` is the migration connection's
+# `lock_timeout = '5s'` (`migrations/env.py:run_migrations_online`), not `statement_timeout`:
+# the build waits out every transaction that can see the table, and Postgres bounds a lock wait
+# with `lock_timeout`. That is fix 71's error verbatim, and fix 85's review reproduced it on this
+# very statement. The ruling raises `lock_timeout` to 120 s for the build statement only,
+# read-set-restore in the same `finally` as `statement_timeout`, inside the same autocommit
+# block; `migrations/env.py` keeps its 5 s for every other migration and for the healer.
+
+#: What `migrations/env.py:run_migrations_online` puts on the migration connection. The tests
+#: below start the session there, so the restored values are the release's own.
+RELEASE_LOCK_TIMEOUT, RELEASE_STATEMENT_TIMEOUT = "5s", "300s"
+
+
+def _setting_ms(conn, name: str) -> int:
+    """`pg_settings.setting` for a timeout GUC: milliseconds, the unit the revision restores."""
+    return int(conn.execute(text("select setting from pg_settings where name = :name"),
+                            {"name": name}).scalar())
+
+
+@contextmanager
+def _release_session(engine):
+    """A connection carrying the two timeouts the release's migration connection carries.
+
+    `set` without `local` needs the commit: SQLAlchemy 2.0 opens an implicit transaction for the
+    statement, and a rollback would take the setting away with it. `migrations/env.py` commits
+    for the same reason (and because `autocommit_block` refuses a transaction it did not open).
+    The session fixture's `checkin` listener runs `reset all`, so nothing leaks to the next test.
+    """
+    with engine.connect() as conn:
+        conn.execute(text(f"set lock_timeout = '{RELEASE_LOCK_TIMEOUT}'"))
+        conn.execute(text(f"set statement_timeout = '{RELEASE_STATEMENT_TIMEOUT}'"))
+        conn.commit()
+        yield conn
+
+
+def test_the_orders_intent_migration_raises_both_timeouts_for_the_build_statement_only(_schema):
+    """The ruling's amendment: `lock_timeout` is raised to 120 s beside the 1800 s
+    `statement_timeout`, both after the previous values are read and both restored in the same
+    `finally` after the build, so the session the rest of the release runs on is unchanged."""
+    module = _orders_intent_revision()
+    assert module.BUILD_LOCK_TIMEOUT == "120s"
+    assert module.BUILD_STATEMENT_TIMEOUT == "1800s"
+    statements = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    with _release_session(_schema) as conn:
+        previous_lock_ms = _setting_ms(conn, "lock_timeout")
+        previous_statement_ms = _setting_ms(conn, "statement_timeout")
+        before = (conn.execute(text("show lock_timeout")).scalar(),
+                  conn.execute(text("show statement_timeout")).scalar())
+        conn.commit()                       # nothing of ours may be open at `upgrade()`
+        event.listen(Engine, "before_cursor_execute", record)
+        try:
+            _upgrade_on(conn, module)       # must not raise: the index is valid here
+        finally:
+            event.remove(Engine, "before_cursor_execute", record)
+        after = (conn.execute(text("show lock_timeout")).scalar(),
+                 conn.execute(text("show statement_timeout")).scalar())
+        conn.rollback()
+
+    assert (previous_lock_ms, previous_statement_ms) == (5_000, 300_000)
+    build = statements.index(module._INDEX_DDL)
+    for raised, restored in ((f"set lock_timeout = '{module.BUILD_LOCK_TIMEOUT}'",
+                              f"set lock_timeout = '{previous_lock_ms}'"),
+                             (f"set statement_timeout = '{module.BUILD_STATEMENT_TIMEOUT}'",
+                              f"set statement_timeout = '{previous_statement_ms}'")):
+        assert raised in statements and restored in statements, statements
+        assert statements.index(raised) < build < statements.index(restored), statements
+    # (b) the session the release keeps running on is exactly the one it had.
+    assert after == before == ("5s", "5min")
+
+
+def test_the_orders_intent_migration_restores_both_timeouts_after_a_cancelled_wait(_schema):
+    """Fix 71's failure, on fix 85's index: a second session holds `orders` in ACCESS EXCLUSIVE,
+    the build's lock wait is cancelled, and the driver's error raises out of the build statement
+    before the `indisvalid` read. The `finally` must still put both settings back -- which is
+    also why the two restores are nested rather than sequential: the first must not be able to
+    skip the second. The build's own 120 s wait is patched down to 1 s so this test is seconds,
+    not two minutes; the wait, the cancellation and the restore are the real thing."""
+    module = _orders_intent_revision()
+    holder = _schema.connect()
+    try:
+        holder.execute(text("lock table orders in access exclusive mode"))
+        assert holder.in_transaction()
+        with _release_session(_schema) as conn:
+            previous = (conn.execute(text("show lock_timeout")).scalar(),
+                        conn.execute(text("show statement_timeout")).scalar())
+            conn.commit()
+            assert module.BUILD_LOCK_TIMEOUT == "120s"   # the ruling's value, asserted
+            module.BUILD_LOCK_TIMEOUT = "1s"            # then patched: this module object
+                                                        # is this test's own load
+            with pytest.raises(OperationalError) as error:
+                _upgrade_on(conn, module)
+            assert "lock timeout" in str(error.value)
+            assert (conn.execute(text("show lock_timeout")).scalar(),
+                    conn.execute(text("show statement_timeout")).scalar()) == previous
+            conn.rollback()
+    finally:
+        holder.rollback()
+        holder.close()
+    # The cancelled wait never reached the catalogue: the index is untouched and still valid.
+    assert _valid(_schema, ORDERS_INTENT_INDEX) is True

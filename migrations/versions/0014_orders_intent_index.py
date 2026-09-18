@@ -34,16 +34,26 @@ helper for `0006_quotes_run_index`'s reason and one more:
   entering it a second time finds `connection.in_transaction()` true (its own `fake_trans`) and
   trips `assert self._transaction is not None`, which the outer block has already set to None.
 
-Why the connection's 300 s (`migrations/env.py:run_migrations_online`) is not enough, and why
-the timeout is raised for this one statement only. `CREATE INDEX CONCURRENTLY` is not bounded by
-the size of `orders`: it waits out every transaction that can see the table, twice -- once
-before each of its two heap passes -- and the executor's expiry-cohort steps have run 184-253 s
-on this database. Two of those end to end, plus the build itself, is past 300 s, and a
-`statement_timeout` cancellation there is exactly what leaves the half-built index behind. The
-raise is scoped: the previous value is read from `pg_settings` in milliseconds, set back in a
-`finally` immediately after the statement (so a failed build restores it too), and the session
-keeps `lock_timeout = '5s'` unchanged -- the release still fails fast rather than queueing
-behind an orphaned backend.
+Why the connection's own bounds (`migrations/env.py:run_migrations_online`: 300 s
+`statement_timeout`, 5 s `lock_timeout`) are not enough, and why both are raised for this one
+statement only (the user's ruling of 2026-09-18, second file, section 1). `CREATE INDEX
+CONCURRENTLY` is not bounded by the size of `orders`: it waits out every transaction that can
+see the table, twice -- once before each of its two heap passes -- and the executor's
+expiry-cohort steps have run 184-253 s on this database. Two of those end to end, plus the
+build itself, is past 300 s, and a `statement_timeout` cancellation there is exactly what
+leaves the half-built index behind. Those waits are *lock* waits, though, so the bound that
+actually cancels this build is `lock_timeout`, not the statement clock -- that is fix 71's
+`canceling statement due to lock timeout` verbatim, and fix 85's review reproduced it on this
+statement. So the build statement runs under `statement_timeout = 1800s` and
+`lock_timeout = 120s`, and nothing else does: each previous value is read from `pg_settings` in
+milliseconds and set back in the same `finally` immediately after the statement (so a failed or
+cancelled build restores both too), and `migrations/env.py` is untouched, which keeps the 5 s
+on every other migration and on `heal_invalid_indexes`. 120 s is short on purpose: a full
+release stops the app containers and drains their orphaned backends before `migrate ensure`
+runs (`scripts/release-omarchy.py:646-658`), so nothing legitimate holds `orders` during the
+build beyond autovacuum, which yields in about a second; a queued ShareUpdateExclusive request
+never blocks INSERT/UPDATE on `orders` in any case; and with the apps already stopped, a long
+lock wait is downtime before a failure.
 
 The `indisvalid` check is the second build condition and the release's fail-closed point.
 `create index concurrently if not exists` skips an index whose name is already in the catalogue
@@ -100,10 +110,22 @@ _INDEX_DDL = ("create index concurrently if not exists ix_orders_intent "
 #: above two expiry-cohort waits (184-253 s each) plus the build, against the connection's 300 s.
 BUILD_STATEMENT_TIMEOUT = "1800s"
 
-#: `pg_settings.setting` for `statement_timeout` is in milliseconds, and a bare integer in a SET
-#: is milliseconds too, so the restore puts back exactly what the connection had -- no unit
+#: The same condition for the bound that actually cancels a concurrent build (the ruling of
+#: 2026-09-18, second file, section 1): every one of the build's waits is a lock wait, and
+#: Postgres bounds a lock wait with `lock_timeout`, so the connection's 5 s would cancel this
+#: statement long before either statement timeout mattered. 120 s, and no more: the release has
+#: already stopped the app containers and drained their orphaned backends by the time
+#: `migrate ensure` runs, nothing legitimate then holds `orders` but autovacuum (which yields in
+#: about a second), and with the apps down a longer wait would only buy downtime before the same
+#: failure. Raised here and restored below, never in `migrations/env.py`, whose 5 s still covers
+#: every other migration and the healer's non-concurrent REINDEX.
+BUILD_LOCK_TIMEOUT = "120s"
+
+#: `pg_settings.setting` for these two is in milliseconds, and a bare integer in a SET is
+#: milliseconds too, so the restore puts back exactly what the connection had -- no unit
 #: rounding through `show statement_timeout`'s '5min' spelling.
 _STATEMENT_TIMEOUT_MS = "select setting from pg_settings where name = 'statement_timeout'"
+_LOCK_TIMEOUT_MS = "select setting from pg_settings where name = 'lock_timeout'"
 
 #: The user's second build condition, read on the connection that built the index.
 _INDISVALID = ("select i.indisvalid from pg_index i "
@@ -115,12 +137,22 @@ _INDISVALID = ("select i.indisvalid from pg_index i "
 def upgrade() -> None:
     with op.get_context().autocommit_block():
         bind = op.get_bind()
-        previous_ms = int(bind.execute(text(_STATEMENT_TIMEOUT_MS)).scalar())
+        previous_statement_ms = int(bind.execute(text(_STATEMENT_TIMEOUT_MS)).scalar())
+        previous_lock_ms = int(bind.execute(text(_LOCK_TIMEOUT_MS)).scalar())
         op.execute(f"set statement_timeout = '{BUILD_STATEMENT_TIMEOUT}'")
+        op.execute(f"set lock_timeout = '{BUILD_LOCK_TIMEOUT}'")
         try:
             op.execute(_INDEX_DDL)
         finally:
-            op.execute(f"set statement_timeout = '{previous_ms}'")
+            # Nested rather than two sequential statements: if restoring `lock_timeout` itself
+            # fails (the connection is gone, say), the inner `finally` still attempts
+            # `statement_timeout`, and the first error is the one that propagates. Each value
+            # comes from its own `pg_settings` read above, so neither restore can put back the
+            # other's number.
+            try:
+                op.execute(f"set lock_timeout = '{previous_lock_ms}'")
+            finally:
+                op.execute(f"set statement_timeout = '{previous_statement_ms}'")
         valid = bind.execute(text(_INDISVALID), {"name": INDEX_NAME}).scalar()
     if valid is not True:
         raise RuntimeError(

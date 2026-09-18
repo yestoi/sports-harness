@@ -904,15 +904,17 @@ def _run_revision_upgrade(connection, module) -> None:
 
 
 def test_the_orders_intent_migration_raises_the_timeout_for_the_build_statement_only(scratch_db):
-    """The user's build condition: `statement_timeout` raised for that statement only.
+    """The user's build condition: both timeouts raised for that statement only.
 
-    `migrations/env.py` sets the migration connection to 300 s, which is not enough for a
-    `CREATE INDEX CONCURRENTLY` that waits out every transaction able to see `orders` (the
-    executor's expiry-cohort steps have run 184-253 s, and the statement waits twice). The
-    revision raises it immediately before the build, restores the connection's own value
-    immediately after -- in a `finally`, so a failed build restores it too -- and both SETs are
-    inside the one autocommit block the build runs in, so the raised value is in force for that
-    statement and nothing else on the session.
+    `migrations/env.py` sets the migration connection to 300 s and `lock_timeout = '5s'`, and
+    neither is enough for a `CREATE INDEX CONCURRENTLY` that waits out every transaction able to
+    see `orders` (the executor's expiry-cohort steps have run 184-253 s, and the statement waits
+    twice; those waits are lock waits, so the 5 s is the bound that actually cancels the build --
+    the amendment of 2026-09-18, second file, section 1). The revision raises both immediately
+    before the build, restores the connection's own values immediately after -- in a `finally`,
+    so a failed build restores them too -- and every SET is inside the one autocommit block the
+    build runs in, so the raised values are in force for that statement and nothing else on the
+    session.
     """
     from sqlalchemy import event
 
@@ -923,26 +925,38 @@ def test_the_orders_intent_migration_raises_the_timeout_for_the_build_statement_
     def record(conn, cursor, statement, parameters, context, executemany):
         statements.append(" ".join(statement.split()).lower())
 
+    def setting_ms(conn, name):
+        return conn.execute(text("select setting from pg_settings where name = :name"),
+                            {"name": name}).scalar()
+
     with scratch_db.connect() as conn:
         conn.execute(text("set statement_timeout = '300s'"))
+        conn.execute(text("set lock_timeout = '5s'"))       # migrations/env.py's own pair
         conn.commit()
-        before = conn.execute(text("show statement_timeout")).scalar()
-        before_ms = conn.execute(text(
-            "select setting from pg_settings where name = 'statement_timeout'")).scalar()
+        before = (conn.execute(text("show statement_timeout")).scalar(),
+                  conn.execute(text("show lock_timeout")).scalar())
+        before_ms = (setting_ms(conn, "statement_timeout"), setting_ms(conn, "lock_timeout"))
         conn.commit()
         event.listen(scratch_db, "before_cursor_execute", record)
         try:
             _run_revision_upgrade(conn, module)
         finally:
             event.remove(scratch_db, "before_cursor_execute", record)
-        after = conn.execute(text("show statement_timeout")).scalar()
+        after = (conn.execute(text("show statement_timeout")).scalar(),
+                 conn.execute(text("show lock_timeout")).scalar())
 
     build = next(i for i, s in enumerate(statements)
                  if s.startswith("create index concurrently if not exists ix_orders_intent"))
-    assert statements[build - 1] == f"set statement_timeout = '{module.BUILD_STATEMENT_TIMEOUT}'"
-    assert statements[build + 1] == f"set statement_timeout = '{before_ms}'"
-    # Raised for that statement only: the connection is back on the migration's own 300 s.
-    assert after == before
+    # The two raises are the two statements immediately before the build and the two restores
+    # the two immediately after it; the order within each pair is the revision's to choose.
+    assert set(statements[build - 2:build]) == {
+        f"set statement_timeout = '{module.BUILD_STATEMENT_TIMEOUT}'",
+        f"set lock_timeout = '{module.BUILD_LOCK_TIMEOUT}'"}, statements
+    assert set(statements[build + 1:build + 3]) == {
+        f"set statement_timeout = '{before_ms[0]}'",
+        f"set lock_timeout = '{before_ms[1]}'"}, statements
+    # Raised for that statement only: the connection is back on the migration's own 300 s / 5 s.
+    assert after == before == ("5min", "5s")
     # And the ruling's other condition is read on the same connection, right after the build.
     assert any("indisvalid" in s for s in statements[build:]), statements[build:]
 
@@ -950,21 +964,26 @@ def test_the_orders_intent_migration_raises_the_timeout_for_the_build_statement_
 def test_the_orders_intent_migration_restores_the_timeout_when_the_build_fails(scratch_db,
                                                                                monkeypatch):
     """The restore is in a `finally`: a build that raises must not leave the session on the
-    raised timeout, which would otherwise outlive the statement it was raised for."""
+    raised timeouts, which would otherwise outlive the statement they were raised for. Both of
+    them, since the amendment of 2026-09-18 -- the two restores are nested so that a failure in
+    the first cannot skip the second."""
     module = _load_revision("0014_orders_intent_index.py")
     create_schema(scratch_db)
     monkeypatch.setattr(module, "_INDEX_DDL", "create index concurrently if not exists "
                                               "ix_orders_intent on orders (no_such_column)")
     with scratch_db.connect() as conn:
         conn.execute(text("set statement_timeout = '300s'"))
+        conn.execute(text("set lock_timeout = '5s'"))
         conn.commit()
-        before = conn.execute(text("show statement_timeout")).scalar()
+        before = (conn.execute(text("show statement_timeout")).scalar(),
+                  conn.execute(text("show lock_timeout")).scalar())
         conn.commit()
         with pytest.raises(Exception):
             _run_revision_upgrade(conn, module)
         if conn.in_transaction():
             conn.rollback()
-        assert conn.execute(text("show statement_timeout")).scalar() == before
+        assert (conn.execute(text("show statement_timeout")).scalar(),
+                conn.execute(text("show lock_timeout")).scalar()) == before
 
 
 def _load_baseline():
