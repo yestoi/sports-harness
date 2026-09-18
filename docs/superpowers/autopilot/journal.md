@@ -3219,3 +3219,30 @@ User, verbatim (07:19 CT, in chat): "Read /home/trey/dev/sports/.superpowers/sdd
 - Rulings: row 79 stays Open with the judge finding (its defect, the per-loop print rescan, is gone; the judge's `phase_tape_ms` clause failed on a different cost) - the user rules close or follow-on - cost if wrong: a row lingers. Row 87 opened as hotfix scope (instrumentation on the exhausted path, `harness/ops/coverage.py` and `harness/strategy/pipeline.py`, not the executor value path), serial after 6D Task 11 (same files). Item 21 step 1 vehicle: a plan revision adding Task 11 to `docs/superpowers/plans/2026-09-13-phase6d-sustained-evaluation.md` under plan-next rules (opus writer dispatched 07:51 CT in worktree plan-6d-t11, brief `.superpowers/sdd/2026-09-13-phase6d-sustained-evaluation/task-11-plan-brief.md`; opus reviewer next), then phase-style execution under the 6D ledger; an app-only release before the 18:30 CT window is permitted (not the executor value path) so Saturday is the first populated game day. Anomalies: entry 274's end time was an estimate (the commit landed 07:34 CT); capture 04 (1440 legacy-tall) exceeded the 400 KB cap; the walker's item 19 line named the failing invariant tile `gate_rows_one_gate_variant` while the capture shows `intents_without_order_or_skip` (the carried row), re-scored with no new finding.
 - Carried forward: row 87 added to Open; row 79 stays Open (Deploy cell updated); row 84 stays Watch.
 - Next: hotfix (fix-85 review consumption) and phase (Task 11 plan revision) in parallel, the 09:00 CT daily line (operate) with the 08:10 CT deferred rows read then, verify re-read 18:25 CT (cron f2b3647e, reminder 2026091802); wakeup 18:25 CT.
+
+## 276. hotfix - fix 85: orders(intent_id) concurrent index merged, held for Monday's full release - 2026-09-18 07:30-08:18 CT
+
+- Orient: rule 1 - row 85 Open by the user's ruling (journal 272 item 22); batch opened 07:30 CT, ledger `.superpowers/sdd/hotfix-2026-09-18-orders-intent-index/progress.md`.
+- Branch / commits: fix-2026-09-18-orders-intent-index b2daea3..82401bd (code 39dc62f, review minors 82401bd; rebased onto 0900648 before the fast-forward)
+- Result: done (merged; the release is deferred to Monday's quiet window by the ruling)
+- Dispatches: 2 (impl opus, review opus)
+- Tests: 4,229 passed, 1 deselected, 6 shards exit 0, pristine, on the branch database at 82401bd (receipt `test-harness_test_fix_2026_09_18_orders_intent_index.json`, release tree 0b38e6a2, dirty empty before and after)
+- Review: clean - APPROVED WITH MINORS 0/1/3 (`.superpowers/sdd/results/fix-85-review.md`); the Important is the lock_timeout question for the user, not a code change; Minors 1-2 (runbook head, revision docstring) applied as 82401bd; Minor 3 ruled below
+- Deploy: none (held for Monday's quiet-window full release, journal 272 item 22; main is ahead of the runtime by design until then)
+- Verification: not run; Monday: `pg_index.indisvalid` for `ix_orders_intent` read by hand after `migrate ensure` whatever the release reports, invalid is a stop and never a re-run (the healer would REINDEX `orders` non-concurrently); judge `exec.phase_place_ms` per `exec.placed` before and after
+- Rulings: Decision 1 (the `HEAD_REVISION` bump to 0014) accepted, the migration cannot run without it. Minor 3 (the guard filters on `current_schema()` where the healer uses `'public'`) left unchanged: fails closed either way and matches schema.py's precedent; a behaviour change would need a re-review. The reviewer's reading on lock_timeout, for the user: the migration connection's 5 s `lock_timeout`, not `statement_timeout`, is the bound that cancels a concurrent build (reproduced on the branch database with fix 71's own error); raising it for the build only, read-set-restore in the revision, is technically right and does not queue executor writes, but it is outside the ruling's words, so it is the user's call before Monday; declining leaves a cancelled build as a stop with the index invalid in the catalogue. Fixture grant revoked after the final suite (`has_column_privilege` false). Worktree and branch kept until Monday's release verification.
+- Carried forward: row 85 stays Open (merged, held; Deploy cell updated)
+- Next: plan-next (Task 11 review, see 277), operate (09:01 CT daily line); wakeup 09:01 CT (cron 957d5683)
+
+## 277. plan-next - 6D revision 3: Task 11 written; its review stopped by the user - 2026-09-18 07:51-08:17 CT
+
+- Orient: journal 272 item 21 step 1 with the vehicle named in 275 (a plan revision under plan-next rules, opus writer and opus reviewer).
+- Branch / commits: main e04ee33 (`docs/superpowers/plans/2026-09-13-phase6d-sustained-evaluation.md`: Task 11 section, wave 9 row, conformance row, shared-file chains, the rulings block)
+- Result: transient: the opus plan reviewer was stopped by the user at 08:17 CT before reporting; not re-dispatched; the review round is outstanding and the section stands in the plan pending the user's word
+- Dispatches: 2 (plan writer opus; plan reviewer opus, stopped)
+- Tests: n/a
+- Review: outstanding (one round, stopped)
+- Deploy: none
+- Rulings: the writer's open questions 1-6 ruled in the plan's rulings block: I6's 336 read as the non-null-feed product and no constant, comment or cap changed; the raw `market.market_type` written, never a bucket; `feed` stays null where no gap row exists; a §3 row 2 count change after the release is granularity, not regression, and row 87 stays serial after Task 11; wave 9 alone (Tasks 1-10 merged); no new test module. Observation for the user's packet (not this task): `COVERAGE_ROW_CAP` 3,072 against a worst case of 3,528 rows a priced run if every reachable cell were occupied (pre-existing arithmetic; measured about 162 rows a run; the cap truncates visibly and `coverage.truncated` is watched). Writer's report `.superpowers/sdd/results/6d-task-11-plan.md`; review brief `.superpowers/sdd/2026-09-13-phase6d-sustained-evaluation/task-11-plan-review-brief.md`.
+- Carried forward: none
+- Next: awaiting the user on the Task 11 review; meanwhile operate (09:01 CT daily line); wakeup 09:01 CT
