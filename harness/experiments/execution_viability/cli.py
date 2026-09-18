@@ -212,8 +212,10 @@ def veto_profile_cmd(
     for day in sorted(profile.weekday_allocation):
         print(f"    weekly        {day:<8} {profile.weekday_allocation[day]}")
     print(f"  release         {profile.release_hour_ct}:00 America/Chicago")
-    print(f"  claim order     {veto_profile.CLAIM_ORDER_AFTER}")
-    print(f"  claim order now {veto_profile.CLAIM_ORDER_BEFORE}")
+    print(f"  claim order (today, in force)                    "
+          f"{veto_profile.CLAIM_ORDER_BEFORE}")
+    print(f"  claim order (under this profile, not in force)   "
+          f"{veto_profile.CLAIM_ORDER_AFTER}")
     print("  status          dormant; activation is the user's dated decision (§0.14c) and this "
           "command writes no setting")
     print(f"question (§0.14c, unanswered): {veto_profile.AMENDMENT_QUESTION}")

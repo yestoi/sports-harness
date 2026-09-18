@@ -47,10 +47,10 @@ from harness.db.models import VetoDecision
 # and so does this module. Restating it here would let a postponement be final for a parlay leg
 # and not for a veto decision, on the same game, in the same hour.
 from harness.parlay.needs import FINAL_STATUSES
+from harness.research import pacing
 from harness.research.client import (PRIMARY_MODEL, SHADOW_MODEL, ResearchClient,
                                      web_search_tool)
 from harness.research.features import build_features, feature_delta, invalidated
-from harness.research import pacing
 from harness.research.notes import write_notes
 from harness.research.prompt import (EFFORT, MAX_OUTPUT_TOKENS, OUTPUT_SCHEMA, PROMPT_HASH,
                                      SYSTEM_BLOCKS, THINKING, render_user)
@@ -140,9 +140,12 @@ _OLDEST_BUCKET = text(f"""
 #: `(kickoff_utc - now) asc` would sort a *passed* kickoff first - its difference is the smallest
 #: (negative) one - and let the stale backlog monopolise exactly the near-kickoff windows the
 #: profile exists to protect, so the first term is the future/past split (plan T6's stated
-#: deviation, addendum revision 3). One row; the join is `games`' primary key and the filter is
-#: `veto_queue`'s claimable predicate, so the access path is the one `_OLDEST_BUCKET` already uses
-#: plus a primary-key lookup per candidate row.
+#: deviation, addendum revision 3). One row out, but **not** on `_OLDEST_BUCKET`'s access path:
+#: that statement can walk `veto_queue (bucket_start)` and stop at `limit 1`, while this one orders
+#: by an expression over the joined `games.kickoff_utc`, which no index serves, so the planner
+#: joins and sorts the whole claimable set on every sweep (185,203 queue rows at the time of
+#: writing). Dormant, so it costs nothing today; `exec.loop_ms` and this statement's timing are to
+#: be checked on the first day after activation.
 _KICKOFF_FIRST_BUCKET = text(f"""
     select q.game_id, q.market_type, q.bucket_start
       from veto_queue q left join games g on g.id = q.game_id

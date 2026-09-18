@@ -33,7 +33,9 @@ DEFAULT_ROW_CAP = 200_000
 
 #: Printed above every preflight table, because the number's meaning is the point.
 PREFLIGHT_HEADER = ("coverage is reported as opportunities, not outcomes; no historical answer "
-                    "is reused as if the profile had asked a different question (§1.8d)")
+                    "is reused as if the profile had asked a different question (§1.8d); the "
+                    "arrivals are walked in arrival order, so money spent earlier in a day is "
+                    "not available to a later near-kickoff bucket")
 
 #: §0.14c's question, verbatim. Rendered by `exp veto-profile`; answered by the user, and only by
 #: the user, with a date.
@@ -48,14 +50,16 @@ CLAIM_ORDER_AFTER = ("(g.kickoff_utc is null or g.kickoff_utc <= :now), g.kickof
                      "q.bucket_start, q.game_id nulls last, q.market_type")
 
 #: The stored arrivals themselves: one row per queued signal in the window, with the game's sport
-#: and kickoff and whatever decision the row already carries. Bounded by the window and by
-#: `:row_cap`, and ordered the way `veto_queue` is already read.
+#: and kickoff. Bounded by the window and by `:row_cap`, and ordered the way `veto_queue` is
+#: already read.
+#:
+#: `veto_decisions` is deliberately **not** joined. A preflight counts opportunities, and the
+#: disposition a row actually received answers a question the profile did not ask (§1.8d);
+#: reading it here would be the first step towards reusing a historical answer as if it had.
 _ARRIVALS = text("""
-    select q.game_id, q.market_type, q.bucket_start, q.signal_id, g.sport, g.kickoff_utc,
-           d.decision, d.decided_at
+    select q.game_id, q.market_type, q.bucket_start, q.signal_id, g.sport, g.kickoff_utc
       from veto_queue q
       left join games g on g.id = q.game_id
-      left join veto_decisions d on d.signal_id = q.signal_id
      where q.bucket_start >= :since and q.bucket_start < :until
      order by q.bucket_start, q.signal_id
      limit :row_cap
@@ -121,6 +125,11 @@ class PreflightReport:
         "one paired call per bucket at the worst-case cost, which is what the reservation takes",
         "a bucket's near-kickoff status is judged as of its own `bucket_start`, never later",
         "arrivals with no game row carry no kickoff and are never counted as near-kickoff",
+        "the walk is chronological: the kickoff-first order decides only among buckets claimable "
+        "at the same instant, and money spent earlier in the day is gone",
+        "the live worker claims one bucket per sweep and carries a backlog this walk does not, "
+        "so the ordering term's benefit is a lower bound here while the reserve is measured "
+        "in full",
     ))
 
 
@@ -169,34 +178,57 @@ def _claim_order(bucket: _Bucket, profile: PacingProfile | None):
 def _simulate(buckets: list[_Bucket], profile: PacingProfile | None, *,
               cost_per_pair: Decimal, daily_cap: Decimal,
               weekly_cap: Decimal) -> tuple[int, int, dict[date, Decimal], Decimal]:
-    """Walk the arrivals in the profile's claim order and spend until a cap or a floor binds.
+    """Walk the arrivals **chronologically** and spend until a cap or a floor binds.
 
     Returns `(funded, funded_near_kickoff, day_totals, week_total)`. Every refusal here is the
     one `reserve_spend` would make: `day_total + cost > daily_cap - reserved_floor`, then
     `day_total + cost > daily_cap`, then the week against `weekly_cap` less the remaining days'
     allocation. Nothing is invented: a bucket that could not be funded is simply not counted.
+
+    **Time moves forward, exactly as it does live** (review fix, Important 1). The walk steps
+    through the distinct `bucket_start` instants in order, adds the buckets that have arrived by
+    each instant to a ready set, and claims from that ready set in `_claim_order` - so the
+    profile's kickoff-first order decides only among buckets claimable **at the same instant**,
+    which is all the live claim statement can do. Sorting the whole window by kickoff proximity
+    and then spending would let a 19:00 near-kickoff arrival take money an 08:00 arrival had
+    already spent, roughly doubling the reported near-kickoff coverage - the one number
+    §1.8's expected result and the §0.14c decision turn on. The same walk produces the
+    `profile=None` comparison column, so both columns are made under one set of assumptions.
+
+    What the chronology leaves out is stated in the report's caveats: the live worker claims one
+    bucket per sweep, so a real queue carries a backlog this walk does not (it offers every
+    arrival a claim at the instant it arrives). That makes the ordering term's benefit a **lower**
+    bound here; the reserve - which is the mechanism §1.8 rests on, and which this walk applies
+    at each claim instant - is measured in full.
     """
     day_totals: dict[date, Decimal] = {}
     week_total = Decimal("0")
     funded = funded_near = 0
-    for bucket in sorted(buckets, key=lambda b: _claim_order(b, profile)):
-        instant = bucket.bucket_start
-        day = chicago_day(instant)
-        near = pacing.near_kickoff(profile, instant, bucket.kickoff_utc, sport=bucket.sport)
-        floor = pacing.reserved_floor(profile, instant, daily_cap, near_kickoff=near,
-                                      sport=bucket.sport)
-        day_total = day_totals.get(day, Decimal("0"))
-        if floor and day_total + cost_per_pair > daily_cap - floor:
-            continue
-        if day_total + cost_per_pair > daily_cap:
-            continue
-        weekly_reserved = pacing.weekly_floor(profile, instant, weekly_cap)
-        if week_total + cost_per_pair > weekly_cap - weekly_reserved:
-            continue
-        day_totals[day] = day_total + cost_per_pair
-        week_total += cost_per_pair
-        funded += 1
-        funded_near += int(near)
+    arrivals: dict[datetime, list[_Bucket]] = {}
+    for bucket in buckets:
+        arrivals.setdefault(bucket.bucket_start, []).append(bucket)
+    ready: list[_Bucket] = []
+    for instant in sorted(arrivals):
+        ready.extend(arrivals[instant])
+        ready.sort(key=lambda b: _claim_order(b, profile))
+        claimable, ready = ready, []
+        for bucket in claimable:
+            day = chicago_day(instant)
+            near = pacing.near_kickoff(profile, instant, bucket.kickoff_utc, sport=bucket.sport)
+            floor = pacing.reserved_floor(profile, instant, daily_cap, near_kickoff=near,
+                                          sport=bucket.sport)
+            day_total = day_totals.get(day, Decimal("0"))
+            if floor and day_total + cost_per_pair > daily_cap - floor:
+                continue
+            if day_total + cost_per_pair > daily_cap:
+                continue
+            weekly_reserved = pacing.weekly_floor(profile, instant, weekly_cap)
+            if week_total + cost_per_pair > weekly_cap - weekly_reserved:
+                continue
+            day_totals[day] = day_total + cost_per_pair
+            week_total += cost_per_pair
+            funded += 1
+            funded_near += int(near)
     return funded, funded_near, day_totals, week_total
 
 

@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 
 from harness.experiments.execution_viability import EXP_LABEL
 from harness.experiments.execution_viability import veto_profile
+from harness.experiments.execution_viability import cli as exp_cli
 from harness.experiments.execution_viability.cli import exp_app
 from harness.experiments.execution_viability.manifest import canonical_json
 from harness.research import pacing, veto
@@ -262,7 +263,7 @@ def test_every_skipped_evaluation_keeps_its_label_and_names_the_new_reason_code(
 
 # --- the preflight, the amendment record and the command ---------------------------------------
 
-def test_the_preflight_replays_stored_arrivals_and_invents_no_answer(db_session, env_settings):
+def test_the_preflight_replays_stored_arrivals_and_invents_no_answer(db_session):
     """§1.8(d): every number is an opportunity count taken from `veto_queue`, and the profile's
     coverage is compared with today's on the same stored arrivals."""
     _two_buckets(db_session)
@@ -287,7 +288,64 @@ def test_the_preflight_replays_stored_arrivals_and_invents_no_answer(db_session,
     assert db_session.execute(text("select count(*) from veto_decisions")).scalar() == 0
 
 
-def test_the_amendment_record_leaves_the_boundary_instant_for_the_user(env_settings):
+def _paced_day(session):
+    """Two far-from-kickoff arrivals in the morning and two near-kickoff arrivals in the evening,
+    all on one America/Chicago day, all on games kicking off that evening."""
+    kickoff = datetime(2026, 9, 17, 0, 0, tzinfo=timezone.utc)      # 19:00 CT on the 16th
+    starts = [(NOW, kickoff),                                       # 07:00 CT, 12 h out: far
+              (NOW + timedelta(hours=1), kickoff),                  # 08:00 CT, 11 h out: far
+              (NOW + timedelta(hours=9), kickoff),                  # 16:00 CT, 3 h out: near
+              (NOW + timedelta(hours=9, minutes=30),
+               kickoff + timedelta(minutes=30))]                    # 16:30 CT, 3 h out: near
+    for bucket_start, kick in starts:
+        game, market = seed_game(session, kickoff=kick)
+        signal = seed_signal(session, market=market, created_at=bucket_start)
+        enqueue(session, signal=signal, game=game, bucket_start=bucket_start,
+                enqueued_at=bucket_start)
+    session.commit()
+    return starts
+
+
+def test_the_preflight_spends_the_day_in_arrival_order_not_in_kickoff_order(db_session):
+    """Review fix, Important 1: money spent in the morning is gone by the evening.
+
+    $10 a day at $4 a pair is two pairs, and the profile holds half the day ($5) for near-kickoff
+    work. Chronologically: the 07:00 arrival takes $4 of the $5 general share, the 08:00 arrival
+    is refused (it would cross the $5 line), the 16:00 near-kickoff arrival takes the reserve, and
+    the 16:30 one is refused by the day's cap. One far-from-kickoff call and one near-kickoff call
+    are funded. Sorting the whole day by kickoff proximity first - what this walk used to do -
+    would fund **both** evening buckets and neither morning one, reporting twice the near-kickoff
+    coverage the day can actually pay for.
+    """
+    _paced_day(db_session)
+    profile = pacing.load_profile("near_kickoff_50")
+    report = veto_profile.preflight(
+        db_session, profile, since=NOW - timedelta(hours=1), until=NOW + timedelta(hours=11),
+        now=NOW, cost_per_pair=Decimal("4"), daily_cap=Decimal("10"),
+        weekly_cap=Decimal("150"))
+    assert report.buckets == 4 and report.near_kickoff_buckets == 2
+    assert report.funded == 2
+    assert report.funded_near_kickoff == 1        # not 2: the morning spent half the day first
+    # funded == 2 with one near-kickoff call means the other funded call was a far-from-kickoff
+    # one, which is the arrival-order property this case exists to prove.
+    assert report.uncovered == 2
+    assert report.day_totals == {chicago_day(NOW): Decimal("8")}
+    # Today's order funds the two morning arrivals and no near-kickoff work at all: there is no
+    # reserve to hold anything back, which is the gap §1.8 exists to close.
+    assert report.funded_today == 2 and report.funded_near_kickoff_today == 0
+    assert "arrival order" in veto_profile.PREFLIGHT_HEADER
+
+
+def test_the_built_profile_and_the_registry_entry_are_the_same_object_by_hash():
+    """§0.8's guarantee is that the hash names exactly what activation turns on, so the builder
+    and the registry must not be able to drift apart."""
+    built = veto_profile.build_profile("near_kickoff_50", near_kickoff_fraction=Decimal("0.50"))
+    registered = pacing.load_profile("near_kickoff_50")
+    assert built.profile_hash() == registered.profile_hash()
+    assert built.as_json() == registered.as_json()
+
+
+def test_the_amendment_record_leaves_the_boundary_instant_for_the_user():
     profile = pacing.load_profile("near_kickoff_50")
     record = veto_profile.amendment_record(profile, prepared_at=NOW)
     assert profile.profile_hash() in record
@@ -299,13 +357,16 @@ def test_the_amendment_record_leaves_the_boundary_instant_for_the_user(env_setti
     assert "Do you activate it, and from what date?" in veto_profile.AMENDMENT_QUESTION
 
 
-def test_the_command_prints_the_profile_and_the_question_and_activates_nothing(env_settings):
+def test_the_command_prints_the_profile_and_the_question_and_activates_nothing():
     result = runner.invoke(exp_app, ["veto-profile", "--name", "near_kickoff_50"])
     assert result.exit_code == 0, result.output
     assert result.output.splitlines()[0] == EXP_LABEL          # §0.6, every `harness exp` command
     profile = pacing.load_profile("near_kickoff_50")
     assert profile.profile_hash()[:12] in result.output
     assert "Do you activate it, and from what date?" in result.output
-    assert env_settings.veto_pacing_profile is None            # the command writes no setting
-    source = Path(veto_profile.__file__).read_text()
-    assert "veto_pacing_profile =" not in source               # nor does the module
+    # The command activates nothing, and the guard is the source rather than a `Settings` object
+    # the command never sees: no module behind it assigns the setting at all.
+    for module in (veto_profile, exp_cli):
+        body = Path(module.__file__).read_text()
+        assert "veto_pacing_profile =" not in body          # no assignment
+        assert "setattr(" not in body                       # and no indirect one
