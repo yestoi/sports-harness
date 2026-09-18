@@ -1,6 +1,6 @@
 # Autopilot checkpoint
 
-Updated 2026-09-18 07:24 CT by controller session sports-ed in `/home/trey/dev/sports` on Omarchy. Last journal entry: 273 (260 was a separate user-directed session: sports.tunderwood.com behind Authelia, U9 amended, no release). Paper-only. Runtime build: **4066197** (journal 273, app-only 07:23 CT Sep 18, fix 79 print cache; 747791c full 10:04 CT Sep 16, journal 257; app-ws on 747791c). Main = the runtime; deploy trigger empty. Rollback: app-only redeploy of 1a12781 (the cache has no off switch). origin/main pushed 2026-09-16 at the user's request (journal 259; U7 pushes after phases and on Mondays); main's upstream is origin/main.
+Updated 2026-09-18 07:40 CT by controller session sports-ed in `/home/trey/dev/sports` on Omarchy. Last journal entry: 274 (260 was a separate user-directed session: sports.tunderwood.com behind Authelia, U9 amended, no release). Paper-only. Runtime build: **4066197** (journal 273, app-only 07:23 CT Sep 18, fix 79 print cache; 747791c full 10:04 CT Sep 16, journal 257; app-ws on 747791c). Main = the runtime; deploy trigger empty. Rollback: app-only redeploy of 1a12781 (the cache has no off switch). origin/main pushed 2026-09-16 at the user's request (journal 259; U7 pushes after phases and on Mondays); main's upstream is origin/main.
 
 ## Right now
 

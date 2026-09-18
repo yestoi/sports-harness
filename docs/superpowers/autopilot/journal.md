@@ -3193,3 +3193,14 @@ User, verbatim (07:19 CT, in chat): "Read /home/trey/dev/sports/.superpowers/sdd
 - Rulings: the first `make deploy-omarchy-app` at 07:21:28 CT was refused by the script's clean-main check because the pre-release evidence file was untracked; nothing was built or stopped and no release directory was written, so it is not a failed deploy under the daily ceiling; the file was committed (4066197) and the release rerun. Anomalies: the pre-release snapshot's `exec_state` query named a table that does not exist (health JSON carries the heartbeat); harmless.
 - Carried forward: none (row 79 closes on the judge)
 - Next: verify (fix 79 judge), wakeup 07:43 CT; meanwhile row 86 design read dispatch (opus, read-only)
+
+## 274. operate - item 19: veto study as a finding only; pacing brief written as a proposal - 2026-09-18 07:31-07:40 CT
+
+- Orient: rule 4 - journal 272 (the user's item 19 ruling): the calendar's seven-day veto study runs today as a finding, no model re-runs; the study duty itself is deferred.
+- Finding (`evidence/2026-09-18-veto-study-finding.txt`, read-only queries at 07:30 CT over the last 7 days): the veto decides under two percent of intents; almost three quarters of the decided rows were judged two to six days before kickoff and none inside about six hours, because the worker claims the oldest queued bucket first and the daily cap is spent before 09:00 CT every day. Labels are all `proceed` (about forty percent from cache, the rest `fair_move`) plus a small `veto_error` tail (connection errors, search errors, timeouts); no `reduce` or `veto` on the primary. Primary and shadow disagree on three pairs in the sample, every one sonnet `reduce` against opus `proceed`. Budget-skipped rows include a large near-kickoff population the veto has never been asked about, so the zero-veto rate says nothing yet about the veto's designed case.
+- Duty deferred: the study's model re-runs are `study` kind under the same $25 shared cap and would displace the veto entirely on the day they run; the user ruled today runs as a finding only (journal 272). The deferral stands until the user rules on pacing; the calendar row is not marked done.
+- Pacing brief written as a proposal, not a dispatch: `reports/2026-09-18-veto-pacing-brief.md` (options: kickoff-proximity claim order, hourly sub-budgets weighted by the queue's own histogram, a near-kickoff floor; lean 1 plus 3 for this weekend, 2 later; each a dated measurement amendment under spec §6.7). Caps unchanged.
+- From today the daily 09:00 CT line notes whether the annotator or the parlay rationale was refused on the shared cap (journal 272, item 19, point 3).
+- Dispatches: 0.
+- Result: done (finding recorded; duty deferred by the user's ruling).
+- Next: verify (fix 79 judge at 07:43 CT), then the morning-after verify unit and the 09:00 CT daily line (cron f2b3647e is the 18:25 CT wakeup; the 09:00 CT line runs from the clock).

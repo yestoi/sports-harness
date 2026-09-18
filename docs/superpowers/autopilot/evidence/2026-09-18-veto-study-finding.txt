@@ -1,0 +1,203 @@
+# Item 19: veto study as a finding only (journal 272), read 2026-09-18 07:28 CT; last 7 days; no model re-runs
+SET
+== research_notes columns
+ column_name |        data_type         
+-------------+--------------------------
+ call_id     | uuid
+ model       | character varying
+ kind        | character varying
+ subject_id  | character varying
+ effort      | character varying
+ prompt_hash | character varying
+ features    | jsonb
+ snippets    | jsonb
+ tool_calls  | jsonb
+ output      | jsonb
+ usage       | jsonb
+ cost_usd    | numeric
+ latency_ms  | integer
+ request_id  | character varying
+ created_at  | timestamp with time zone
+ replay      | boolean
+ arm         | character varying
+
+== veto_decisions columns
+    column_name    |        data_type         
+-------------------+--------------------------
+ signal_id         | bigint
+ call_id           | uuid
+ decision          | character varying
+ confidence        | numeric
+ from_cache        | boolean
+ feature_delta     | jsonb
+ signal_created_at | timestamp with time zone
+ decided_at        | timestamp with time zone
+ reason_code       | character varying
+
+== research_spend columns
+    column_name     |     data_type     
+--------------------+-------------------
+ day                | date
+ kind               | character varying
+ model              | character varying
+ calls              | integer
+ input_tokens       | bigint
+ output_tokens      | bigint
+ cache_read_tokens  | bigint
+ cache_write_tokens | bigint
+ searches           | integer
+ usd_reserved       | numeric
+ usd                | numeric
+
+== veto_decisions last 7 days by label
+ERROR:  column "created_at" does not exist
+LINE 1: ...lect decision, count(*) from veto_decisions where created_at...
+                                                             ^
+SET
+== veto_decisions last 7 days by decision and reason_code
+      decision       |    reason_code     | count  | from_cache 
+---------------------+--------------------+--------+------------
+ veto_skipped_budget | daily              | 175469 |          0
+ proceed             |                    |   1579 |       1234
+ proceed             | fair_move          |   1518 |          0
+ veto_error          | APIConnectionError |     43 |         18
+ veto_error          | search_error       |      5 |          2
+ veto_error          | APITimeoutError    |      4 |          2
+
+== decided share: veto_decisions vs intents last 7 days
+ intents_7d | veto_rows_7d | decided_7d 
+------------+--------------+------------
+     178618 |       178618 |       3149
+
+== research_notes last 7 days by model, kind, arm and output decision
+      model      |   kind   | arm | decision | count | errors_or_null |  usd  
+-----------------+----------+-----+----------+-------+----------------+-------
+ claude-opus-5   | annotate |     |          |     6 |              3 |  1.35
+ claude-opus-5   | veto     |     | proceed  |  1863 |              0 | 97.05
+ claude-opus-5   | veto     |     |          |    30 |             30 |  0.16
+ claude-sonnet-5 | veto     |     | proceed  |  1830 |              0 | 71.68
+ claude-sonnet-5 | veto     |     | reduce   |     3 |              0 |  0.40
+ claude-sonnet-5 | veto     |     |          |    60 |             60 |  0.23
+
+== primary vs shadow disagreement on the same subject (veto kind), last 7 days
+ pairs | both | disagree 
+-------+------+----------
+  1893 |    0 |        0
+
+ subject_id | primary_d | shadow_d 
+------------+-----------+----------
+
+== arms seen
+ arm |      model      | count 
+-----+-----------------+-------
+     | claude-opus-5   |  1893
+     | claude-sonnet-5 |  1893
+
+== hours of day (CT) of the decided sample (veto kind, primary arm), last 7 days
+ hour_ct | count 
+---------+-------
+       0 |  1142
+       1 |   722
+       2 |   260
+       8 |    84
+       9 |   194
+      10 |   380
+      11 |   462
+      12 |   256
+      13 |   286
+
+== hours to kickoff of the decided sample: veto_decisions joined to signals and games
+ERROR:  column s.game_id does not exist
+LINE 1: ...ls s on s.id = d.signal_id join games g on g.id = s.game_id ...
+                                                             ^
+SET
+== primary (opus) vs shadow (sonnet) on the same subject, veto kind, last 7 days (arm column is unset)
+ pairs | both | disagree 
+-------+------+----------
+  1893 | 1829 |        3
+
+ subject_id | primary_d | shadow_d 
+------------+-----------+----------
+ 14837428   | proceed   | reduce
+ 14882456   | proceed   | reduce
+ 20524785   | proceed   | reduce
+
+== signals and venue_markets columns (for the hours-to-kickoff join)
+  table_name   |                                                                                                                                                              string_agg                                                                                                                                                              
+---------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ signals       | id, run_id, variant_id, gap_snapshot_id, venue_market_id, side, fair_p, fair_source, venue_best_bid, venue_best_ask, price_target, fee_at_target, as_estimate, edge, edge_min, stake, contracts, decision, rejection_reason, labels, replay, created_at, as_measured
+ venue_markets | id, venue, ticker, event_ticker, series_ticker, game_id, market_type, threshold, side_team_id, side, kalshi_team_uuid, close_time, match_confidence, match_status, match_reason, first_seen_raw_id, last_seen_at, expected_expiration_time, price_level_structure, price_ranges, fee_type, fee_multiplier, exchange_index, match_key
+ veto_queue    | signal_id, game_id, market_type, bucket_start, enqueued_at, claimed_at
+
+== veto_queue buckets: claimed vs pending by bucket_start hour CT, next 48 h
+      bucket_ct      | buckets | claimed 
+---------------------+---------+---------
+ 2026-09-17 08:00:00 |    1276 |    1276
+ 2026-09-17 09:00:00 |    1282 |    1282
+ 2026-09-17 10:00:00 |    1295 |    1295
+ 2026-09-17 11:00:00 |    1314 |    1314
+ 2026-09-17 12:00:00 |    1333 |    1333
+ 2026-09-17 13:00:00 |    1332 |    1332
+ 2026-09-17 14:00:00 |    1326 |    1326
+ 2026-09-17 15:00:00 |    3780 |    3780
+ 2026-09-17 16:00:00 |    8002 |    8002
+ 2026-09-17 17:00:00 |   10554 |   10554
+ 2026-09-17 18:00:00 |    8898 |    8898
+ 2026-09-17 19:00:00 |    7650 |    7650
+ 2026-09-17 20:00:00 |    8262 |    8262
+ 2026-09-17 21:00:00 |    7929 |    7929
+ 2026-09-17 22:00:00 |    5711 |    5711
+ 2026-09-17 23:00:00 |    1842 |    1842
+ 2026-09-18 00:00:00 |    1261 |    1261
+
+SET
+== hours to kickoff of the decided sample (veto_decisions -> signals -> venue_markets -> games), last 7 days, decided rows only
+ bucket | min_h | max_h | count 
+--------+-------+-------+-------
+      3 |   5.7 |   5.8 |     6
+      4 |   6.2 |  11.7 |   237
+      5 |  13.7 |  17.6 |    71
+      6 |  24.4 |  45.0 |   568
+      7 |  48.1 |  93.1 |  1164
+      8 |  96.7 | 148.6 |  1103
+
+== the same for the budget-skipped rows (what the veto never saw)
+ bucket | count 
+--------+-------
+      0 |  1811
+      1 |  3569
+      2 |  5149
+      3 |  4353
+      4 |  2231
+      5 |  4723
+      6 | 39507
+      7 | 64488
+      8 | 49638
+
+== decided calls by CT hour and day, last 7 days (when the cap binds)
+  day_utc   | hour_ct | count 
+------------+---------+-------
+ 2026-09-11 |       8 |    61
+ 2026-09-11 |       9 |    80
+ 2026-09-11 |      10 |   145
+ 2026-09-11 |      11 |   148
+ 2026-09-11 |      12 |    44
+ 2026-09-13 |       0 |   117
+ 2026-09-13 |       1 |   110
+ 2026-09-14 |       2 |     7
+ 2026-09-14 |      10 |   148
+ 2026-09-14 |      11 |   216
+ 2026-09-14 |      12 |   166
+ 2026-09-14 |      13 |   248
+ 2026-09-15 |       0 |   202
+ 2026-09-15 |       1 |    70
+ 2026-09-15 |       9 |    78
+ 2026-09-16 |       0 |   224
+ 2026-09-16 |       1 |   180
+ 2026-09-16 |       2 |    73
+ 2026-09-17 |       0 |   132
+ 2026-09-17 |       1 |   223
+ 2026-09-17 |       2 |   145
+ 2026-09-18 |       0 |   296
+ 2026-09-18 |       1 |    36
+
