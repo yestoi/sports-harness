@@ -20,6 +20,7 @@ policy shape, the comparison itself and its tests on fixtures.
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -60,6 +61,11 @@ class HoldingPolicy:
     join_the_bid: bool = False
     #: Place only inside this many minutes of kickoff.
     near_kickoff_only_min: int | None = None
+    #: 6D.1 §1.6(a), experiment-only. A callable `(MarketNow) -> int` returning the cadence-derived
+    #: allowance in seconds; `None` -- the baseline, and every live construction -- leaves
+    #: `_fair_stale` exactly as F36 states it. `BASELINE` is unchanged, so no registered
+    #: configuration and no `config_hash` moves (§7 item 3 (i)).
+    cadence_allowance: "Callable[..., int] | None" = None
 
 
 BASELINE = HoldingPolicy()

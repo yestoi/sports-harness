@@ -33,6 +33,7 @@ from harness.execution.plan import (
     plan_actions,
     rebuild_state,
 )
+from harness.execution.policy import BASELINE
 from harness.strategy.run import StrategyState
 
 NOW = datetime(2026, 9, 13, 18, 0, tzinfo=timezone.utc)
@@ -265,6 +266,40 @@ def test_fair_stale_uses_allowance(side):
     assert plan(markets=loose, **args) == [Place(uid(2), side, Decimal("0.4500"),
                                                  Decimal("20.00"), KICKOFF - timedelta(minutes=10),
                                                  False)]
+
+
+def test_a_default_policy_and_an_explicit_baseline_plan_identically():
+    """6D.1 §7 item 3 (ii): the `cadence_allowance` branch is dead while the field is None.
+
+    Three shapes this module already exercises -- a place, an edge-decay cancel and a
+    fair-stale pair -- are planned twice: once through `plan()`, which passes no policy at all,
+    and once through `plan_actions` with an explicit `BASELINE`. The two action lists must
+    `repr()` identically. A difference means the experiment's field reached the live path.
+    """
+    stale_ts = NOW - timedelta(seconds=300)
+    cases = [
+        {"intents": [intent()], "orders": [], "markets": {1: market()}},
+        {"intents": [], "orders": [order()], "markets": {1: market(fair="0.30")}},
+        {"intents": [intent(vm_id=2, n=2)], "orders": [order()],
+         "markets": {1: market(fair_ts=stale_ts), 2: market(vm_id=2, fair_ts=stale_ts)}},
+    ]
+    for case in cases:
+        default = plan(**case)
+        explicit = plan_actions(list(case["intents"]), list(case["orders"]), case["markets"],
+                                {}, VARIANTS, False, NOW, S, policy=BASELINE)
+        assert repr(default) == repr(explicit)
+
+
+@pytest.mark.parametrize("side", SIDES)
+def test_fair_stale_is_unchanged_when_cadence_allowance_is_none(side):
+    """The before-picture of `test_fair_stale_uses_allowance` (line 255), which this task's
+    branch must not move. Both expectations are hand-derived from F36's rule
+    `age > max(cfg["stale_s"], stale_allowance_s)` with the variant's `stale_s` of 180."""
+    old = NOW - timedelta(seconds=300)
+    tight = {1: market(side=side, fair_ts=old, stale_allowance_s=0)}      # 300 > max(180, 0)
+    loose = {1: market(side=side, fair_ts=old, stale_allowance_s=1000)}   # 300 < max(180, 1000)
+    assert plan(orders=[order(side=side)], markets=tight) == [Cancel(1, "fair_stale")]
+    assert plan(orders=[order(side=side)], markets=loose) == []
 
 
 @pytest.mark.parametrize("side", SIDES)

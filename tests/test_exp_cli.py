@@ -26,3 +26,12 @@ def test_policy_compare_help_points_at_the_stateful_runner():
     # whitespace-normalised text rather than against rich's line breaks.
     rendered = " ".join(result.stdout.split())
     assert "admission" in rendered and "harness exp run" in rendered
+
+
+def test_the_report_command_is_registered_and_refuses_an_unfrozen_run():
+    result = runner.invoke(exp_app, ["--help"])
+    assert "report" in result.stdout
+    help_text = runner.invoke(exp_app, ["report", "--help"])
+    assert help_text.exit_code == 0
+    rendered = " ".join(help_text.stdout.split())
+    assert "--run-id" in rendered

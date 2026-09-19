@@ -116,12 +116,25 @@ class ArmRunner:
     def __init__(self, *, run_id: str, arm_id: str, policy, variant_cfg: dict[str, dict],
                  exec_settings, walkers: dict | None = None,
                  world: ArmWorld | None = None, tz: str | None = None,
-                 ledger: PortfolioLedger | None = None) -> None:
+                 ledger: PortfolioLedger | None = None,
+                 cadence_allowance=None) -> None:
         self.run_id = run_id
         self.arm_id = arm_id
         # §1.6: the arms differ only in the policy argument and in which observations they may
         # read. `None` is the baseline, which is what `plan_actions` defaults to.
         self.policy = policy if policy is not None else plan_mod.BASELINE
+        if cadence_allowance is not None:
+            # §1.6(a)/M2: `plan._fair_stale` is handed `cfg` and `policy` and no settings
+            # object, so the term that needs this deployment's tick budget, this run's as-of
+            # kickoffs and its capture window is resolved **here**, once, before any call into
+            # the shared chain. Rebinding, not adding: only an arm whose policy already
+            # declares an allowance (§1.6's arm B) may be given one, so a baseline runner
+            # cannot be turned into a counterfactual one by a keyword.
+            if self.policy.cadence_allowance is None:
+                raise ValueError(
+                    "a cadence allowance was passed for an arm whose policy declares none; "
+                    "only §1.6's arm B takes one (§1.6a)")
+            self.policy = replace(self.policy, cadence_allowance=cadence_allowance)
         self.variant_cfg = variant_cfg
         # `ExecSettings` is the frozen copy every decision is hashed against; a caller holding a
         # whole `Settings` is converted here rather than at every call site.

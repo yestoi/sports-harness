@@ -464,6 +464,13 @@ def _fair_stale(market: MarketNow, cfg: dict, now: datetime,
     if market.fair_p is None or age is None:
         return True
     allowance = max(int(cfg["stale_s"]), int(market.stale_allowance_s or 0))
+    if policy.cadence_allowance is not None:
+        # 6D.1 §1.6(a) (ruling I2), experiment-only: arm B **replaces** the pricing-time
+        # allowance with the interval that was actually scheduled plus the recorder's tick
+        # budget, so B is tighter than A in the burst regime and wider only off-window. The
+        # baseline passes None and this branch is dead, which `tests/test_exec_plan.py`'s
+        # byte-identical corpus assertion proves.
+        allowance = max(int(cfg["stale_s"]), int(policy.cadence_allowance(market)))
     if policy.stale_allowance_s is not None:
         # 6D §1.6: the one alternative that widens the freshness standard. The baseline passes
         # None and this branch is dead, so the live path is the rule F36 states and nothing

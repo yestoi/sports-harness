@@ -10,8 +10,9 @@ from sqlalchemy import text
 from harness.config.settings import get_settings
 from harness.execution.book import newest_ws_connect
 from harness.experiments.execution_viability import EXP_DB_ROLE, EXP_LABEL
-from harness.experiments.execution_viability import (adapter, baseline, bookhealth, capture,
-                                                     liquidity, source, storage, veto_profile)
+from harness.experiments.execution_viability import (adapter, arms, baseline, bookhealth,
+                                                     capture, episodes, liquidity, outcomes,
+                                                     report, source, storage, veto_profile)
 from harness.logging_setup import configure_logging
 from harness.research import pacing
 
@@ -442,3 +443,120 @@ def run_cmd(run_id: str = typer.Option(..., "--run-id"),
     print(f"  open at the end            {chunks[-1].open_orders if chunks else 0}")
     if result.stopped:
         print(f"  stopped                    {result.stopped}")
+
+
+#: §1.9(d)'s per-arm, per-portfolio rows, on `ix_exp_order_run_arm (run_id, arm_id, placed_at)`:
+#: one aggregate per portfolio identity `(arm, variant)` and never a sum across two of them.
+_REPORT_ARMS = text(
+    "select arm_id, variant_id as portfolio, count(*) as orders, "
+    "count(*) filter (where filled_contracts > 0) as fills, "
+    "count(distinct venue_market_id) as markets, "
+    "count(*) filter (where filled_contracts > 0 and filled_contracts < contracts) "
+    "as partial_fills, "
+    "coalesce(sum(filled_contracts), 0) as contracts, "
+    "count(*) filter (where cancel_reason = 'exec_capacity') as capacity_exclusions "
+    "from exp_order where run_id = :r group by 1, 2 order by 1, 2")
+
+#: The common outcome schedule's own rows (§1.9a): the order-weighted 30-minute markout is the
+#: primary number, its source age travels with it, and matured/censored/missing stay apart.
+_REPORT_OUTCOMES = text(
+    "select x.arm_id, o.variant_id as portfolio, "
+    "avg(x.value) filter (where x.horizon = '1800') as markout_1800, "
+    "avg(x.source_age_s) filter (where x.horizon = '1800') as source_age_s, "
+    "count(*) filter (where x.censored) as censored, "
+    "count(*) filter (where x.missing_reason is not null) as missing "
+    "from exp_outcome x join exp_order o on o.id = x.exp_order_id and o.run_id = x.run_id "
+    "where x.run_id = :r group by 1, 2")
+
+#: §1.7's classifications, counted for the run: the three book-health counts the ops read-back
+#: records beside the instant count.
+_REPORT_HEALTH = text("select classification, count(*) as n from exp_book_health "
+                      "where run_id = :r group by 1 order by 1")
+
+#: C1's pair, read back from the run's own limitation row rather than recomputed here.
+_REPORT_SPACING = text("select scope from exp_limitation where run_id = :r "
+                       "and kind = 'loop_spacing_unreconstructable' "
+                       "order by created_at desc limit 1")
+
+#: §1.9(c)'s concentration: the largest single game's share of the run's filled contracts, and
+#: what the portfolio ledger allocated of the print volume it actually observed (§1.5).
+_REPORT_GAME_SHARE = text(
+    "select vm.game_id, sum(f.contracts) as contracts from exp_fill f "
+    "join exp_order o on o.id = f.exp_order_id and o.run_id = f.run_id "
+    "left join venue_markets vm on vm.id = o.venue_market_id "
+    "where f.run_id = :r group by 1 order by 2 desc limit 1")
+_REPORT_ALLOCATION = text(
+    "select coalesce(sum(allocated), 0) as allocated, coalesce(sum(available), 0) as available "
+    "from exp_allocation where run_id = :r")
+
+
+@exp_app.command("report")
+def report_cmd(run_id: str = typer.Option(..., "--run-id")) -> None:
+    """Render one run's arm results under §1.9's reporting contract.
+
+    Every row this command prints is **exploratory**: it is an arm's counterfactual behaviour,
+    not a registered variant's performance, so the registered table is printed empty rather
+    than filled with numbers from a different measurement (§0.10, §1.9e). The episode rule,
+    the resolved instant count beside the live loop estimate and the concentration lines come
+    before any outcome, and the markouts are read from `exp_outcome` -- the one common
+    schedule -- rather than recomputed here (ruling C2).
+    """
+    configure_logging()
+    # §0.6: the label first, after the arguments are validated and before any number.
+    print(EXP_LABEL)
+    s = get_settings()
+    with source.reader(s) as session:
+        run = session.execute(_EXP_RUN_MANIFEST, {"r": run_id}).first()
+        if run is None:
+            raise typer.BadParameter(
+                f"no exp_run row for {run_id}: a report is rendered for a frozen run (§1.2)")
+        arms_rows = session.execute(_REPORT_ARMS, {"r": run_id}).all()
+        outcomes = {(row.arm_id, row.portfolio): row
+                    for row in session.execute(_REPORT_OUTCOMES, {"r": run_id}).all()}
+        health = session.execute(_REPORT_HEALTH, {"r": run_id}).all()
+        scope = session.execute(_REPORT_SPACING, {"r": run_id}).scalar() or {}
+        share = session.execute(_REPORT_GAME_SHARE, {"r": run_id}).first()
+        allocation = session.execute(_REPORT_ALLOCATION, {"r": run_id}).first()
+    rows = []
+    for row in arms_rows:
+        outcome = outcomes.get((row.arm_id, row.portfolio))
+        rows.append({
+            "arm_id": row.arm_id, "portfolio": row.portfolio, "orders": row.orders,
+            "fills": row.fills, "markets": row.markets, "partial_fills": row.partial_fills,
+            "contracts": row.contracts, "capacity_exclusions": row.capacity_exclusions,
+            "markout_1800": None if outcome is None else outcome.markout_1800,
+            "source_age_s": None if outcome is None else outcome.source_age_s,
+            "censored": None if outcome is None else outcome.censored,
+            "missing": None if outcome is None else outcome.missing,
+            "registered": False})
+    concentration = {
+        "maximum contribution by game": (
+            f"game {share.game_id}: {share.contracts} contracts" if share is not None
+            else "no filled contracts in this run"),
+        "allocated against observed print volume": (
+            f"{allocation.allocated} of {allocation.available} contracts"
+            if allocation is not None else "no allocation rows")}
+    print(report.render(
+        [], rows, run_id=run_id, manifest_hash=run.manifest_hash,
+        concentration=concentration, instants=scope.get("instants"),
+        live_loop_estimate=scope.get("live_loop_estimate")))
+    # §1.7's counts, printed beside the run's own instants: the ops read-back records these
+    # three numbers the first time this command is run by hand.
+    print(f"book health classifications ({len(health)}):")
+    for row in health:
+        print(f"  {row.classification:<24} {row.n}")
+    # §1.9(a): the one schedule every arm's numbers were computed on, named in the output so a
+    # reader never has to infer which horizons a blank cell belongs to.
+    print(f"common outcome schedule: {', '.join(outcomes.HORIZONS)} "
+          f"(missing reasons: {', '.join(outcomes.MISSING_REASONS)})")
+    cadence = ((run.manifest or {}).get("opportunity_definition") or {}).get("cadence_in_force")
+    if cadence:
+        print(f"episode gap rule at the run's cadence ({cadence} s): "
+              f"{episodes.gap_rule_s(int(cadence))} s")
+    # §1.6(c): the distinctions each arm decided under, with the hash the manifest froze them
+    # at, so a note cannot be dropped between the run and its report.
+    for arm_id in sorted({row["arm_id"] for row in rows}):
+        spec = arms.ARMS.get(arm_id)
+        if spec is not None:
+            print(f"  arm {arm_id} spec={spec.spec_hash()[:12]} "
+                  f"distinctions={len(spec.notes)} source={spec.observation_source}")
