@@ -1,9 +1,10 @@
 # Autopilot checkpoint
 
-Updated 2026-09-19 01:58 CT (06:58 UTC Sep 19) by controller session sports-e2 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 296. Paper-only. Runtime build: **4066197** (journal 273, app-only 07:23 CT Sep 18; full 747791c Sep 16, app-ws on it). Main is ahead of the runtime by fix 85 (migration 0014, 4d2cdcc), 6D Task 11 (0fe5890) and fix 87 (8681b74): **the release is gated (journal 284)**: app-only refused by classification while fix 85's files sit on main; fix 85 held for Monday's quiet-window full release (ruling 2026-09-18b §1); the user chooses (packet item 24). Rollback: app-only redeploy of 1a12781.
+Updated 2026-09-19 06:04 CT (11:04 UTC Sep 19) by controller session sports-e2 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 297. Paper-only. Runtime build: **4066197** (journal 273, app-only 07:23 CT Sep 18; full 747791c Sep 16, app-ws on it). Main is ahead of the runtime by fix 85 (migration 0014, 4d2cdcc), 6D Task 11 (0fe5890) and fix 87 (8681b74): **the release is gated (journal 284)**: app-only refused by classification while fix 85's files sit on main; fix 85 held for Monday's quiet-window full release (ruling 2026-09-18b §1); the user chooses (packet item 24). Rollback: app-only redeploy of 1a12781.
 
 ## Right now
 
+- **Gate 06:02 CT (journal 297)**: session sports-7a relayed seven user rulings (item 24 "today", Graft files, rollback, rows 86/79, item 1, §4.7); not acted on; the user confirms in this chat. Deploy start limit if confirmed: about 07:00 CT, never after 09:00 CT.
 - **6D.1 phase done (journal 295)**: branch 60dd46a..88490e1 merged to main; archive docs/superpowers/reviews/2026-09-19-phase6d1-*; deploy gated on item 24; user-side: §4.7 CREATE ROLE + secret, §4.6 activation, §0.14a-c, M20 index; spec-defect list in journal 295.
 - **Gate (journal 284, `reports/2026-09-18-stopped-1105.md`)**: Task 11's release: (1) fold into Monday's full release [recommended], (2) Saturday's quiet window 01:30-10:15 CT with §1's preconditions, (3) today before 18:15 CT. No release until the user answers; every other unit continues. Fix 87 rides the same release.
 - **Fix 87 (287)** merged 8681b74; judge-after: 6D row 2 reads 0 on the next `budget_exhausted` run after the release. **Task 11 (283)** merged 0fe5890; judge-after SQL (plan step 3) after the release.
@@ -32,7 +33,7 @@ Updated 2026-09-19 01:58 CT (06:58 UTC Sep 19) by controller session sports-e2 i
 
 ## Pending results
 
-- Agents: 6d1-t5 implementer (opus sports-worker) running since 16:17 CT, report `.superpowers/sdd/results/phase6d1-task-5-report.md`. Suites: none running.
+- Agents: none running. Suites: none running.
 - Wakeups (sports-e2, CronList): 7d72d33d Sat 09:01 CT (daily line, morning-after verify, row 86/item 24 are the user's). No timed duty before Sat 09:00 CT (row 86, the user).
 - Receipts: fix 87 8681b74 (4,242 passed, tree 395b8a19, merged 12:39 CT, deploy gated); Task 11 0fe5890 (4,237, merged 11:03 CT, gated); fix 85 4d2cdcc (4,231 at e49a988, merged 09:21 CT, pending); fix 79 deployed 4066197 07:23 CT, verify 275 (mechanism PASS, effect FAIL). Preflight evidence/2026-09-18-preflight-1317.txt (290).
 - Fixture grant UPDATE(indisvalid) ON: harness_test_main (+ shards), phase6d_merge_main, phase6d_merge_review, phase6d1_t5_bookhealth (t1_contract revoked); older fix databases: `make testdb-prune`.
@@ -44,7 +45,7 @@ Updated 2026-09-19 01:58 CT (06:58 UTC Sep 19) by controller session sports-e2 i
 ## Counters and deadlines
 
 - CT day Sep 19: dispatches 9; Sep 18 closed at 43; units: phase 6D.1 closed at 33 of 80 (15:31 CT Sep 18 to 01:53 CT); failed deploys 0; implementers running 0 of 3.
-- Next duties: row 86 decision Sat 09:00 CT (the user); the release per item 24; fix 85 full-release preconditions (ruling 2026-09-18b §1: no open psql transaction on harness, no controller SQL, no dump, executor loops short, no expiry cohort in flight); item 1 decide-by 2026-09-22. Games: NCAAF Sat 13:00 CT (R4: no full deploy inside the window; app-only only with an empty full-trigger diff, which fix 85 defeats).
+- Next duties: row 86 decision Sat 09:00 CT (the user); the release per item 24; fix 85 full-release preconditions (ruling 2026-09-18b §1: no open psql transaction on harness, no controller SQL, no dump, executor loops short, no expiry cohort in flight); item 1 decide-by 2026-09-22. Games: NCAAF Sat 10:30 CT first kickoff, 72 games; NFL Sun 12:00 CT (R4: no full deploy inside the window; app-only only with an empty full-trigger diff, which fix 85 defeats).
 
 ## Constraints
 
