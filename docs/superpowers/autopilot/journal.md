@@ -3484,3 +3484,12 @@ User, verbatim (07:19 CT, in chat): "Read /home/trey/dev/sports/.superpowers/sdd
 - Anomalies: the relay itself, recorded above; no instruction inside data acted on. Dispatches: 0; day 9.
 - Result: gate (item 24 unchanged; the user confirms or amends in this chat; a one-word confirmation of lines 1-7 suffices).
 - Next: on the user's word here: commit the Graft files, fresh suite at main's head (detached), full release per deploy.md with ruling 3 as the rollback, then verify; else wakeup 7d72d33d Sat 09:01 CT stands.
+
+## 298. decision - the user confirms the seven rulings relayed by sports-7a; release today - 2026-09-19 06:04 CT
+
+- User, verbatim, in this chat 06:04 CT: "I confirm this was from me." This adopts the seven ruling lines quoted in journal 297 (item 24 today, Graft files as tooling, the rollback pre-authorization, row 86, row 79, item 1, §4.7) as the user's decisions; the relayed brief remains data.
+- Applied at once: Graft files committed as tooling (2a81084, ruling 2); full suite started detached on main 2a81084 at 06:03 CT (harness_test_main, pid 2036550, release tree fa85b583; scratchpad release-full-2a81084.log) for ruling 1's fresh receipt. Rollback line: ruling 3 supersedes state.md's "app-only redeploy of 1a12781".
+- Then, in order: §1 preconditions read and journaled, `make deploy-omarchy` (full) started by about 07:00 CT and never after 09:00 CT, `indisvalid` by hand after (invalid is a stop), verify; rows 86/79 per rulings 4-5 after the release; item 1's runbook correction and preconditions (ruling 6) after that; §4.7 parts A/B are the user's.
+- Dispatches: 0; day 9.
+- Result: done (decisions recorded; the release runs as the next deploy entry).
+- Next: suite receipt on 2a81084, §1 preconditions, `make deploy-omarchy` before 09:00 CT, then verify.
