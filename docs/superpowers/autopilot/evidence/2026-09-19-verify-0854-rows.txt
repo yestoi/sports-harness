@@ -1,0 +1,159 @@
+rows_at_utc=2026-09-19T13:57:44Z deploy 01e7b0c; every backticked select in verify.md lines 290-354 and 461-487 run verbatim (:deploy_ts 2026-09-15T06:21:47Z, :cutoff 2026-09-15T05:23:44Z)
+== 6C rows
+-- L300 [(i) Provisional run week key]: select year, week from report_runs where provisional order by generated_at desc limit 1
+2026 | 38
+-- L301 [(ii) Current study snapshot name]: select name from dashboard_snapshots where name like 'study:%' order by generated_at desc limit 1
+study:2026-38
+-- L302 [(iii) Pulse's judged study week]: select payload->'status'->'all' from dashboard_snapshots where name = 'pulse'
+[{"name": "recorder_stale", "unit": "s", "level": "fine", "value": 90.261447, "threshold": 1200.0}, {"name": "heartbeat_watch", "unit": "s", "level": "fine", "value": 45.061368, "threshold": 60.0}, {"name": "heartbeat_broken", "unit": "s", "level": "fine", "value": 45.061368, "threshold": 120.0}, {"name": "ws_event_watch", "unit": "s", "level": "fine", "value": 44.167495, "threshold": 60.0}, {"name": "ws_event_broken", "unit": "s", "level": "fine", "value": 44.167495, "threshold": 120.0}, {"name": "tape_gap", "unit": "count", "level": "fine", "value": 0.0, "threshold": 0}, {"name": "kill_switch", "unit": "count", "level": "not_evaluated", "value": null, "threshold": 0}, {"name": "disk_free", "unit": "fraction", "level": "fine", "value": 0.7977194139460587, "threshold": 0.25}, {"name": "db_ceiling", "unit": "fraction", "level": "fine", "value": 0.2814416666666667, "threshold": 0.6}, {"name": "credits_low", "unit": "fraction", "level": "fine", "value": 0.9633646, "threshold": 0.4}, {"name": "check_fail", "unit": "count", "level": "broken", "value": 1, "threshold": 0}, {"name": "check_skipped", "unit": "count", "level": "fine", "value": 0, "threshold": 0}, {"name": "settle_error_24h", "unit": "count", "level": "fine", "value": 0, "threshold": 0}, {"name": "budget_exhausted", "unit": "count", "level": "fine", "value": 0, "threshold": 2}, {"name": "book_dirty_in_game", "unit": "count", "level": "fine", "value": 62, "threshold": 0}, {"name": "drawdown_stop", "unit": "fraction", "level": "fine", "value": 0.0, "threshold": -0.2}, {"name": "snapshot_stale", "unit": "count", "level": "fine", "value": 1.0000105833333335, "threshold": 2.0}, {"name": "snapshot_budget", "unit": "count", "level": "watch", "value": 614.0, "threshold": 250.0}, {"name": "snapshot_disabled", "unit": "count", "level": "fine", "value": 0.0, "threshold": 0}, {"name": "research_budget", "unit": "count", "level": "watch", "value": 24.5597, "threshold": 25.0}, {"name": "veto_rate", "unit": "fraction", "level": "fine", "value": 0.0, "threshold": 0.25}, {"name": "prop_budget", "unit": "count", "level": "fine", "value": 2675.0, "threshold": 300000.0}, {"name": "parlay_pending_final", "unit": "s", "level": "fine", "value": 0.0, "threshold": 21600.0}]
+-- L303 [(iv) Ticket week key]: select payload->'between'->>'year', payload->'between'->>'week' from dashboard_snapshots where name = 'ticket'
+2026 | 38
+-- L304 [(v) t13 present and first]: select count(*) from report_cells where report_run_id = (select id from report_runs where provisional = false order by generated_at desc limit 1) and table_key 
+92
+-- L305 [(vi) Annotation of a prior week's report]: select r.id, r.year, r.week, r.generated_at, a.created_at from report_runs r left join report_annotations a on a.report_run_id = r.id where r.provisional = fals
+14 | 2026 | 37 | 2026-09-14 13:57:29.892658+00 | 2026-09-14 14:00:24.09057+00
+4 | 2026 | 37 | 2026-09-08 16:56:09.722823+00 | 2026-09-12 13:39:55.899689+00
+2 | 2026 | 37 | 2026-09-08 14:24:15.78345+00 | 2026-09-11 13:42:20.190966+00
+-- L306 [(vii) Week-key invariant]: select count(*) from report_runs r where r.provisional and (r.year, r.week) <> ((extract(isoyear from (r.generated_at at time zone 'America/Chicago'))::int), (e
+ERROR:  invalid input syntax for type timestamp with time zone: "<deploy time>"
+LINE 1: ...e 'America/Chicago'))::int)) and r.generated_at > '<deploy t...
+                                                             ^
+-- L333 [Gate eligibility dormant]: select count(*) from gate_reports where criteria_json ? 'eligibility'
+0
+-- L343 [Eligibility lines in the report]: select markdown from report_runs where provisional = false order by generated_at desc limit 1
+# Weekly report 2026-W37
+
+- Week: 2026-09-07T05:00:00+00:00 to 2026-09-14T05:00:00+00:00 (Monday 00:00 America/Chicago, ISO week 37)
+- Build: `6b9b8d0`
+- Generated: 2026-09-14T13:57:29.892658+00:00
+- Gate criteria hash: `5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5`
+- Executor `config_hash` values seen this week: `15a491be8fad9588d9d5465d5a159a6cef8b32642afea11680ba71d36c5d176b`, `51afb46a112c5d930d2156985bda3ebe92966609828f43c8e1b6538fb3631139`, `776b1ccac8d4e903f0e2cd0b9a18d17c38540317a0d5da1d39de55fa6a789f66`, `82768f6793c9318b0aabb067f26eef4b052c2bc724120cbe9d047b6256b2ce75`, `d6962419ca950dd003f7f8283bc12ab01c36b9fd40e5654901353780d9a9cb9f`, `ef06087f4af152a62a85ca59aef4efbe08c9ca6ce24fbf1277562e28938267bd`
+- Excluded by Amendment 1: none (the pricing clock fix: signals before it carry a wrong `not_stale` label. The record states no run-id range for it, so nothing is counted here)
+- Excluded by Amendment 2: 0 orders, 902796 signals (runs 1-2320); the order count omits orders with no gap snapshot, which cannot be attributed to a run (Minor M4)
+- Excluded by Amendment 3: none (the NO-side variant `sharp_two_sided` is registered. A registration excludes nothing)
+- Excluded by Amendment 4: 509 orders, 4218276 signals (runs 344-4327); the order count omits orders with no gap snapshot, which cannot be attributed to a run (Minor M4)
+- Excluded by Amendment 5: none (the America/Chicago ISO week as the measurement key. The pre-fix range is empty: the only Sunday 19:00-23:59 CT provisional window before the deploy precedes the first paper order)
+
+## Model notes (model-written, unverified)
+
+Written by `claude-opus-5` from the tables below. Every bullet cites a cell and no number in one is absent from a cited cell, but nothing here has been checked by a person. The Monday duty acts on the tables, never on these.
+
+```
+- Execution is effectively idle: the only fills in the week are 2 on ncaaf from 256 orders (t1[7,5], t1[7,7], fill_rate 0.0039 t1[7,4]); nfl's 128 orders filled none (t1[6,7], t1[6,4]).
+- Coverage is uneven across the rotation: most variants score ~0.77 of ticks (t1[4,10]) while one sits at 0.0214 (t1[10,10]) and another at 0.0000 with zero signals (t1[12,10], t1[12,8]), so cross-variant reads are not like-for-like.
+```
+
+## Table 13 (t13): operational diagnostic
+
+One row per operational quantity, each naming its own unit. No row pools variants and no row adds unlike things. Counts are the week's non-replay rows unless the item says cumulative. Sources: `fills` through `ix_fills_filled_at` with `orders` reached by primary key, `metric_samples` through `ix_metric_samples_name_ts`, and `runs.notes` through the capped read Floor's funnel uses. No query keys a pricing table by `run_id` and none puts a predicate on `runs.started_at` (design review C1), so the coverage rows are what the notes can say, not a table-level truth; 6D instruments the rest.
+
+| item | value | unit | note |
+|---|---|---|---|
+| gate variant | sharp_two_sided | variant | `Settings.gate_variant`, resolved against `strategy_variants` by the gate's own rule |
+| filled orders, week | 0 | orders | orders with at least one `queue_model` fill, `replay = false` |
+| distinct games filled, week | 0 | games | distinct `orders.game_id` behind the row above |
+| filled orders, cumulative | 0 | orders | since 2026-09-08, the first paper order |
+| distinct games filled, cumulative | 0 | games | since 2026-09-08 |
+| counterfactual orders, week | 235 | orders | orders whose only fills are `no_watcher`: what would have filled without a watcher |
+| fill rows, queue_model, week | 0 | fill rows | the gate variant's rows, not orders: one order can carry several |
+| fill rows, no_watcher, week | 844 | fill rows | the gate variant's rows, not orders |
+| pricing runs, week | 1579 | runs | runs whose `notes.pricing` block is non-empty |
+| runs scoring the gate variant | 1081 | runs | `notes.pricing.signals` names the gate variant |
+| runs with no fair, gap or signal count | 12366 | runs | `notes.pricing` carries none of `ticks`, `gaps`, `signals`; the notes' own reading |
+| runs with budget_exhausted | 407 | runs | `notes.pricing.budget_exhausted` |
+| executor loop samples | 6148 | metric samples | count of `exec.loop_ms` rows; there is no per-loop counter, 6D instruments it |
+| executor loops skipped | 3457 | loops | sum of `exec.loops_skipped` |
+| tape gaps | 2655 | gap events | sum of `ws.gaps`; there is no gap table (design review I1) |
+| orders under audit | 0 | orders | the gate variant's actual filled orders in the register with a non-`validated` status; the gate criterion itself is untouched (R1) |
+| this run generated at | 2026-09-14T13:57:29.892658+00:00 | timestamp | the report being rendered |
+| newest final report generated at | 2026-09-08T16:56:09.722823+00:00 | timestamp | the newest non-provisional `report_runs` row; provisional rows are a trail |
+| newest final report age | 507680 | seconds | age of the row above at this render |
+| week key | America/Chicago ISO week, Amendment 5 | convention | addendum 0.1 and 0.2; the UTC partition names are storage keys and are unchanged |
+| notes read | 13945 | runs | cap 25000; runs inside the week, and the only ones the coverage rows above count |
+| runs after the window | 777 | runs | read by the cap but dated on or after the week's end; counted in no row above. A count near the cap means the read did not reach far enough back into this week |
+| order audit 157 | pending | audit status | fill history not uniquely identified; tape audit is milestone 6B (since 2026-09-11) |
+
+_The coverage rows are what `runs.notes` can say, not a table-level truth (design review C1). The audit rows label and never exclude: no gate criterion reads them._
+
+## Table 1 (t1): funnel
+
+Funnel per registered variant x sport, over the week's non-replay rows. `fill_rate` is the actual fill rate (orders with a `queue_model` fill / placements); its numerator is orders, while the `fills` column be-- L344 [Floor's fair matches the executor's]: select count(*) from (select o.id from orders o join venue_markets m on m.id = o.venue_market_id where o.replay = false and o.status = any(array['open','partial
+0
+-- L345 [Floor funnel unit keys]: select payload->'funnel' from dashboard_snapshots where name = 'floor'
+{"gaps": 30, "fills": 4, "ticks": 0, "units": {"gaps": "gap snapshots, from runs.notes", "ticks": "pricing ticks, from runs.notes", "fill_rows": "fill rows by method, not orders", "placements": "orders placed", "intent_episodes": "distinct intent episodes, grouped by the stored gap rule", "intent_verdicts": "intent verdicts (placed + skipped), not distinct episodes", "candidate_signals": "candidate signal rows, not distinct opportunities", "opportunity_episodes": "unique candidate opportunities, grouped by the stored gap rule", "orders_filled_actual": "orders with at least one queue_model fill", "orders_filled_counterfactual": "orders whose only fills are no_watcher"}, "orders": 94, "intents": 188, "skipped": [{"class": "unreliable_data", "count": 94, "plain": "our fair price was too old", "reason": "fair_stale"}], "window_h": 6, "cancelled": [{"class": "unreliable_data", "count": 98, "plain": "our fair price was too old", "reason": "fair_stale"}], "fill_rows": {"no_watcher": 4}, "by_variant": {"nfl_only": {"tier": "secondary", "rejected": 2, "candidate": 28}, "wide_band": {"tier": "secondary", "rejected": 2, "candidate": 28}, "constrained": {"tier": "secondary", "rejected": 20, "candidate": 10}, "no_velocity": {"tier": "secondary", "rejected": 2, "candidate": 28}, "sharp_direct": {"tier": "primary", "rejected": 2, "candidate": 28}, "sharp_two_sided": {"tier": "secondary", "rejected": 4, "candidate": 56}, "sharp_plus_derived": {"tier": "secondary", "rejected": 0, "candidate": 0}, "sharp_two_sided#e82fcd0a1e99": {"tier": "replay", "rejected": 0, "candidate": 0}}, "candidates": 178, "placements": 94, "rejected_total": 32, "intent_episodes": 94, "intent_verdicts": 188, "candidate_signals": 178, "episode_gap_rule_s": 600, "opportunity_episodes": 0, "orders_filled_actual": 0, "orders_filled_counterfactual": 2}
+-- L346 [Floor exposure coverage]: select payload->'exposure'->'coverage' from dashboard_snapshots where name = 'floor'
+{"note": "positions opened more than 14 days ago are not counted", "complete": false, "window_days": 14}
+== 6D rows
+-- L467 [Coverage contract, gate variant and primary] skipped, unbound variable: select variant_id, sum(n) filter (where outcome = 'completed')::numeric / nullif(sum(n) filter (wher
+-- L468 [Zero unexplained omissions]: select s.run_id, s.sport, s.ttk_bucket, s.feed, s.market_type, s.variant_id, s.ts from coverage_samples s where s.domain = 'evaluation' and s.outcome = 'schedul
+26664 | ncaaf | 3h_36h | featured | moneyline | 5632da729fa7 | 2026-09-19 03:03:17.251989+00
+26664 |  |  |  |  | 5632da729fa7 | 2026-09-19 03:03:17.251989+00
+26664 | ncaaf | lt20m | featured | moneyline | 5632da729fa7 | 2026-09-19 03:03:17.251989+00
+26664 | ncaaf | 3h_36h | featured | moneyline | f259ca109084 | 2026-09-19 03:03:17.251989+00
+26664 |  |  |  |  | f259ca109084 | 2026-09-19 03:03:17.251989+00
+26664 | ncaaf | lt20m | featured | moneyline | f259ca109084 | 2026-09-19 03:03:17.251989+00
+26664 | ncaaf | 3h_36h | featured | moneyline | c2bc45377328 | 2026-09-19 03:03:17.251989+00
+26664 |  |  |  |  | c2bc45377328 | 2026-09-19 03:03:17.251989+00
+26664 | ncaaf | lt20m | featured | moneyline | c2bc45377328 | 2026-09-19 03:03:17.251989+00
+26664 | ncaaf | 3h_36h | featured | moneyline | ff363c8ac08d | 2026-09-19 03:03:17.251989+00
+26664 |  |  |  |  | ff363c8ac08d | 2026-09-19 03:03:17.251989+00
+26664 | ncaaf | lt20m | featured | moneyline | ff363c8ac08d | 2026-09-19 03:03:17.251989+00
+26664 | ncaaf | 3h_36h | featured | moneyline | e549e693e117 | 2026-09-19 03:03:17.251989+00
+26664 |  |  |  |  | e549e693e117 | 2026-09-19 03:03:17.251989+00
+26664 | ncaaf | lt20m | featured | moneyline | e549e693e117 | 2026-09-19 03:03:17.251989+00
+26664 | ncaaf | 3h_36h | featured | moneyline | 64ba3ef09642 | 2026-09-19 03:03:17.251989+00
+26664 |  |  |  |  | 64ba3ef09642 | 2026-09-19 03:03:17.251989+00
+26664 | ncaaf | lt20m | featured | moneyline | 64ba3ef09642 | 2026-09-19 03:03:17.251989+00
+26664 | ncaaf | 3h_36h | featured | moneyline | 49af716f8708 | 2026-09-19 03:03:17.251989+00
+26664 |  |  |  |  | 49af716f8708 | 2026-09-19 03:03:17.251989+00
+26664 | ncaaf | lt20m | featured | moneyline | 49af716f8708 | 2026-09-19 03:03:17.251989+00
+26831 | ncaaf | 3h_36h | featured | moneyline | 5632da729fa7 | 2026-09-19 06:24:19.693741+00
+26831 |  |  |  |  | 5632da729fa7 | 2026-09-19 06:24:19.693741+00
+26831 | ncaaf | 3h_36h |  | spread | 5632da729fa7 | 2026-09-19 06:24:19.693741+00
+26831 | ncaaf | 3h_36h | featured | spread | 5632da729fa7 | 2026-09-19 06:24:19.693741+00
+26831 | ncaaf | 3h_36h | featured | moneyline | f259ca109084 | 2026-09-19 06:24:19.693741+00
+26831 |  |  |  |  | f259ca109084 | 2026-09-19 06:24:19.693741+00
+26831 | ncaaf | 3h_36h |  | spread | f259ca109084 | 2026-09-19 06:24:19.693741+00
+26831 | ncaaf | 3h_36h | featured | spread | f259ca109084 | 2026-09-19 06:24:19.693741+00
+26831 | ncaaf | 3h_36h | featured | moneyline | e549e693e117 | 2026-09-19 06:24:19.693741+00
+26831 |  |  |  |  | e549e693e117 | 2026-09-19 06:24:19.693741+00
+26831 | ncaaf | 3h_36h |  | spread | e549e693e117 | 2026-09-19 06:24:19.693741+00
+26831 | ncaaf | 3h_36h | featured | spread | e549e693e117 | 2026-09-19 06:24:19.693741+00
+26831 | ncaaf | 3h_36h | featured | moneyline | 64ba3ef09642 | 2026-09-19 06:24:19.693741+00
+26831 |  |  |  |  | 64ba3ef09642 | 2026-09-19 06:24:19.693741+00
+26831 | ncaaf | 3h_36h |  | spread | 64ba3ef09642 | 2026-09-19 06:24:19.693741+00
+26831 | ncaaf | 3h_36h | featured | spread | 64ba3ef09642 | 2026-09-19 06:24:19.693741+00
+26831 | ncaaf | 3h_36h | featured | moneyline | 49af716f8708 | 2026-09-19 06:24:19.693741+00
+26831 |  |  |  |  | 49af716f8708 | 2026-09-19 06:24:19.693741+00
+26831 | ncaaf | 3h_36h |  | spread | 49af716f8708 | 2026-09-19 06:24:19.693741+00
+26831 | ncaaf | 3h_36h | featured | spread | 49af716f8708 | 2026-09-19 06:24:19.693741+00
+26831 | ncaaf | 3h_36h | featured | moneyline | c2bc45377328 | 2026-09-19 06:24:19.693741+00
+26831 |  |  |  |  | c2bc45377328 | 2026-09-19 06:24:19.693741+00
+26831 | ncaaf | 3h_36h |  | spread | c2bc45377328 | 2026-09-19 06:24:19.693741+00
+26831 | ncaaf | 3h_36h | featured | spread | c2bc45377328 | 2026-09-19 06:24:19.693741+00
+26831 | ncaaf | 3h_36h | featured | moneyline | ff363c8ac08d | 2026-09-19 06:24:19.693741+00
+26831 |  |  |  |  | ff363c8ac08d | 2026-09-19 06:24:19.693741+00
+26831 | ncaaf | 3h_36h |  | spread | ff363c8ac08d | 2026-09-19 06:24:19.693741+00
+26831 | ncaaf | 3h_36h | featured | spread | ff363c8ac08d | 2026-09-19 06:24:19.693741+00
+-- L468 [Zero unexplained omissions] skipped, unbound variable: select count(*) from coverage_samples where ts > now() - interval '24 hours' and outcome not in (sel
+-- L469 [Missingness quantified]: select outcome, sum(n) from coverage_samples where domain = 'evaluation' and ts > now() - interval '24 hours' and outcome not in ('completed','scheduled') group
+no_fair | 694610
+no_gap | 192
+budget_stage_skipped | 62
+-- L470 [Fix 48's remaining clause]: select count(*) from (select started_at, notes from runs order by id desc limit 2000) r where r.started_at > now() - interval '24 hours' and (r.notes->'pricing'
+1
+-- L471 [Stage costs, the rescore and the measurement boundary]: select r.notes->'pricing' from (select id, notes from runs order by id desc limit 100) r where r.notes ? 'pricing' order by r.id desc limit 1
+{"gaps": 0, "order": ["sharp_two_sided", "sharp_direct", "constrained", "nfl_only", "no_velocity", "sharp_plus_derived", "wide_band"], "stages": [{"name": "fair_direct", "cause": null, "units": 680, "status": "ran", "elapsed_ms": 4881, "remaining_ms": 20000}, {"name": "gaps_direct", "cause": null, "units": 0, "status": "ran", "elapsed_ms": 1, "remaining_ms": 15118}, {"name": "variants_direct", "cause": null, "units": 0, "status": "ran", "elapsed_ms": 15, "remaining_ms": 15117}, {"name": "fair_derived", "cause": null, "units": 2587, "status": "ran", "elapsed_ms": 3689, "remaining_ms": 15102}, {"name": "gaps_derived", "cause": null, "units": 0, "status": "ran", "elapsed_ms": 1, "remaining_ms": 11413}, {"name": "variants_derived", "cause": null, "units": 0, "status": "ran", "elapsed_ms": 0, "remaining_ms": 11411}], "signals": {"nfl_only": {"rejected": 0, "candidate": 0}, "wide_band": {"rejected": 0, "candidate": 0}, "constrained": {"rejected": 0, "candidate": 0}, "no_velocity": {"rejected": 0, "candidate": 0}, "sharp_direct": {"rejected": 0, "candidate": 0}, "sharp_two_sided": {"rejected": 0, "candidate": 0}, "sharp_plus_derived": {"rejected": 0, "candidate": 0}}, "budget_s": 20, "no_sharp": 750, "variant_ms": {"nfl_only": 0, "wide_band": 0, "constrained": 0, "no_velocity": 0, "sharp_direct": 0, "sharp_two_sided": 0, "sharp_plus_derived": 0}, "fair_direct": 680, "fair_errors": 0, "fair_derived": 2587, "variants_run": ["sharp_two_sided", "sharp_direct", "constrained", "nfl_only", "no_velocity", "sharp_plus_derived", "wide_band"], "budget_capped": true, "gate_variant_id": "5632da729fa7", "budget_exhausted": false, "no_sharp_skipped": false, "variants_partial": [], "variants_skipped": [], "rescore_suppressed": {}, "variant_ms_rescore": {}, "fair_derived_skipped": false, "gate_variant_missing": false}
+-- L473 [Funnel episodes]: select count(*) from opportunity_episodes where started_at > now() - interval '24 hours'
+15075
+-- L475 [RFQ listener (fix 46)]: select count(*), min(received_at), max(received_at) from rfqs where received_at > now() - interval '24 hours'
+0 |  | 
+-- L476 [Table growth and episode churn]: select pg_total_relation_size('coverage_samples') / (1024*1024)
+59
+-- L476 [Table growth and episode churn]: select relname, n_live_tup, n_dead_tup from pg_stat_user_tables where relname in ('opportunity_episodes','intent_episodes')
+opportunity_episodes | 21889 | 306
+intent_episodes | 70939 | 9573
+-- L477 [Nothing moved that may not move]: select count(*) from gate_reports where criteria_json ? 'eligibility'
+0
+-- L478 [Latency series alive]: select count(*) from metric_samples where ts > now() - interval '24 hours' and value < 0
+0

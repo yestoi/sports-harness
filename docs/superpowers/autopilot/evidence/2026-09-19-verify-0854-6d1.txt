@@ -1,0 +1,19 @@
+6d1_at_utc=2026-09-19T14:03:45Z
+== privilege pair
+orders_insert | f
+exp_run_insert | t
+role | harness_exp | f | f | t
+exp_run_rows | 0
+exp_insert_tables | exp_allocation,exp_arm,exp_book_health,exp_checkpoint,exp_fill,exp_limitation,exp_mismatch,exp_observation,exp_order,exp_outcome,exp_run
+== isolation-check
+  fills            insert=False
+  intents          insert=False
+  signals          insert=False
+  ledger           insert=False
+  source_state     insert=False
+  research_spend   insert=False
+  veto_decisions   insert=False
+  exp_run          insert=True
+exit=0
+== secret mount
+-rw------- 1 trey trey   40 Sep 19 08:24 exp_db_password

@@ -1,0 +1,64 @@
+rows_at_utc=2026-09-19T14:03:59Z deploy 01e7b0c; every backticked select in verify.md lines 90-246 (phase 3, 4, 4.5, 5 table rows) run verbatim (:deploy_ts 2026-09-15T06:21:47Z, :cutoff 2026-09-15T05:23:44Z)
+== phase 4.5 rows
+-- L195 [Snapshot self-guard]: select count(*) from operator_events where kind = 'snapshot_disabled' and ts > now() - interval '25 hours'
+1
+-- L197 [Snapshot CPU budget]: select date_trunc('minute', ts) m, sum(value) from metric_samples where name = 'serve.snapshot_ms' and ts > now() - interval '1 hour' group by 1 order by 2 desc
+2026-09-19 14:02:00+00 | 2731.000000
+2026-09-19 13:40:00+00 | 2564.000000
+2026-09-19 13:48:00+00 | 1576.000000
+2026-09-19 13:46:00+00 | 1507.000000
+2026-09-19 13:35:00+00 | 1342.000000
+-- L198 [Floor builder p95]: select percentile_disc(0.95) within group (order by value) from metric_samples where name = 'serve.snapshot_ms' and labels->>'name' = 'floor' and ts > now() - i
+2424.000000
+-- L199 [Scheduler re-enable]: select labels->>'name', percentile_disc(0.95) within group (order by value) from metric_samples where name='serve.snapshot_ms' and ts > now() - interval '15 min
+floor | 2564.000000
+gate | 2.000000
+pulse | 215.000000
+study:2026-38 | 107.000000
+ticket | 969.000000
+-- L204 [Pulse status word]: select payload->'status'->>'status' from dashboard_snapshots where name = 'pulse'
+BROKEN
+-- L206 [`dashboard_snapshots` invariant]: select count(*) from dashboard_snapshots where generated_at > now()
+0
+-- L207 [`parlay_ledger` invariant]: select count(*) from parlay_ledger l where not exists (select 1 from parlay_placements p where p.card_id = l.card_id)
+0
+-- L208 [`parlay_leg_probs` invariant]: select count(*) from parlay_leg_probs where sharp_p < 0 or sharp_p > 1
+0
+-- L209 [`parlay_legs` invariant]: select count(*) from parlay_legs l where not exists (select 1 from parlay_cards c where c.id = l.card_id)
+0
+== phase 5 rows
+-- L226 [`futures_snapshots` coverage]: select snapshot_week, count(distinct series_ticker), count(*) from futures_snapshots group by 1 order by 1 desc limit 3
+2026-W38 | 217 | 22438
+-- L227 [`weather_snapshots` freshness]: select count(*) from games g where g.kickoff_utc between now() and now() + interval '72 hours' and coalesce(greatest((select max(w.fetched_at) from weather_snap
+87
+-- L228 [`weather_points` re-resolution]: select count(*) from runs where started_at > now() - interval '24 hours' and (notes->'weather'->>'reresolved')::int > 0
+0
+-- L229 [`research_spend` under the caps]: select day, sum(usd), sum(usd_reserved) from research_spend where day >= (now() at time zone 'America/Chicago')::date - 1 group by 1
+2026-09-19 | 24.5597 | 0.0000
+2026-09-18 | 24.5576 | 0.0000
+-- L230 [Worst-case re-fit]: select model, sum(usd) / nullif(sum(calls), 0) as usd_per_call, sum(input_tokens) / nullif(sum(calls), 0), sum(searches) / nullif(sum(calls), 0) from research_s
+claude-sonnet-5 | 0.03997002398081534772 | 3629.2695443645083933 | 0
+claude-opus-5 | 0.05312191846522781775 | 3674.0187050359712230 | 0
+-- L231 [Pulse `research_budget`]: select payload->'status'->'rules' from dashboard_snapshots where name = 'pulse'
+[{"name": "check_fail", "unit": "count", "level": "broken", "value": 1, "threshold": 0}, {"name": "snapshot_budget", "unit": "count", "level": "watch", "value": 2564.0, "threshold": 250.0}, {"name": "research_budget", "unit": "count", "level": "watch", "value": 24.5597, "threshold": 25.0}]
+-- L233 [`veto_decisions` against intents]: select (select count(*) from intents where replay = false and created_at > now() - interval '24 hours') as intents, (select count(*) from veto_decisions where d
+58783 | 59539 | 0.00272090562488452947
+-- L234 [Decision lag]: select percentile_disc(0.5) within group (order by extract(epoch from (decided_at - signal_created_at))), percentile_disc(0.95) within group (order by extract(e
+15917.387923 | 25977.606365
+-- L235 [Two notes per veto call]: select count(*) from (select call_id from research_notes where kind = 'veto' group by call_id having count(*) <> 2) x
+0
+-- L236 [`report_annotations`]: select r.id, r.generated_at, a.created_at, jsonb_array_length(a.bullets) from report_runs r left join report_annotations a on a.report_run_id = r.id where r.pro
+14 | 2026-09-14 13:57:29.892658+00 | 2026-09-14 14:00:24.09057+00 | 3
+-- L237 [t7 and t10 render with data]: select table_key, count(*) from report_cells where report_run_id = (select id from report_runs where provisional = false order by generated_at desc limit 1) and
+t10 | 42
+t7 | 7
+-- L238 [`rfqs` arrivals]: select count(*), min(received_at), max(received_at) from rfqs where received_at > now() - interval '24 hours'
+0 |  | 
+-- L239 [`venue_status('kalshi_rfq')`]: select status, reason, since, updated_at from venue_status where venue = 'kalshi_rfq'
+ok |  | 2026-09-12 05:26:38.387488+00 | 2026-09-12 05:26:38.387488+00
+-- L239 [`venue_status('kalshi_rfq')`]: select count(*) from orderbook_events where ts > now() - interval '10 minutes'
+38200
+-- L240 [`rfq_quotes` both branches]: select count(*) from rfq_quotes where declined_reason is null and (fee_branch_game is null or fee_branch_event is null)
+0
+== phase 4 rows
+== phase 3 rows

@@ -1,0 +1,297 @@
+verify_at_utc=2026-09-19T13:54:14Z (08:54 CT) deploy 01e7b0c; verify.md fenced blocks Layer 2 through 2b run verbatim; :boundary_order_id 10886, :boundary_fill_id 1878, :boundary_event_id 2562407, :boundary_ledger_id 4, :cutoff 2026-09-15T05:23:44Z, :deploy_ts 2026-09-15T06:21:47Z, :row72_ids the 1,176 ids of evidence/2026-09-15-row72-ids.txt; duplicate_trades partition venue_trades_y2026w38; 6D.1 run-scoped statements (:run, :warmup_start, :observation_end, :orders_before_id, :signals_before_id, :monday, :day, :hour_start, :hour_end) skipped: no exp_run yet
+== BLOCK 1 L48 :: Layer 2: live data on Omarchy
+-- containers are checked with make status-omarchy; this block is data
+27635 | 2026-09-19 13:53:04.601076+00 | running | 0 |  | 
+27634 | 2026-09-19 13:50:34.601038+00 | ok | 173 | 4816999 | []
+27633 | 2026-09-19 13:48:04.601086+00 | ok | 173 | 4817172 | []
+27632 | 2026-09-19 13:45:34.601065+00 | ok | 176 | 4817345 | []
+27631 | 2026-09-19 13:43:04.60105+00 | ok | 173 | 4817521 | []
+error | 1
+ok | 30
+running | 1
+skipped | 240
+27635 | 2026-09-19 13:53:04.601076+00 | running
+candidate | 178
+rejected | 32
+delta | 296966
+snapshot | 87
+00:00:00.767748
+veto_queue | 239046 | 39442 | 2026-09-19 01:54:37.296424+00 | 2026-09-19 07:06:51.92109+00
+intent_episodes | 70939 | 9573 | 2026-09-19 02:57:50.149248+00 | 2026-09-19 04:08:45.638508+00
+fair_values | 6822751 | 6463 | 2026-09-18 02:38:47.61287+00 | 2026-09-19 03:38:43.80523+00
+market_dirty_intervals | 67940 | 2292 | 2026-09-18 22:21:27.453192+00 | 2026-09-19 10:47:04.156893+00
+trade_watermarks | 9966 | 1828 | 2026-09-15 04:13:53.526755+00 | 2026-09-19 13:54:11.760193+00
+64 | 1024 MB
+170 GB
+== BLOCK 3 L93 :: Phase 3 additions (after the executor ships)
+2026-09-19 13:53:49.801165+00 | 50383 | 0 |  | 22904 | 33315 | 7335 | 53 | 2026-09-19 13:53:51.016+00 | 00:00:25.048911
+cancelled | 43454
+expired | 61
+0
+327153
+3791
+205
+10266
+18164
+3650558
+193834
+exec_capacity | 19861
+fair_stale | 14153
+book_dirty | 10295
+signal_rejected | 248
+kickoff | 12
+no_book | 2
+settle | ok | f | 2026-09-19 13:36:49.855276+00
+settle | ok | f | 2026-09-19 12:36:46.459635+00
+settle | ok | t | 2026-09-19 11:32:29.793633+00
+110275
+9 | 3
+db.brin_ranges_summarized | 2026-09-19 09:22:27.754987+00
+db.growth_gb_per_day | 2026-09-19 09:22:27.754987+00
+db.rfqs_pruned | 2026-09-19 09:22:27.754987+00
+db.size_gb | 2026-09-19 09:22:27.754987+00
+db.table_gb | 2026-09-19 09:22:27.754987+00
+exec.book_errors | 2026-09-19 13:52:49.800789+00
+exec.cancelled | 2026-09-19 13:06:34.800742+00
+exec.dirty_markets | 2026-09-19 13:52:49.800789+00
+exec.expiring_n | 2026-09-19 13:52:49.800789+00
+exec.fair_age_s | 2026-09-19 13:52:49.800789+00
+exec.filled_contracts | 2026-09-19 13:52:49.800789+00
+exec.intents_considered | 2026-09-19 13:52:49.800789+00
+exec.loop_ms | 2026-09-19 13:52:49.800789+00
+exec.loops_skipped | 2026-09-19 13:52:49.800789+00
+exec.nw_pending | 2026-09-19 13:52:49.800789+00
+exec.open_orders | 2026-09-19 13:52:49.800789+00
+exec.p95_loop_ms | 2026-09-19 13:52:49.800789+00
+exec.per_row_book_query | 2026-09-19 13:52:49.800789+00
+exec.per_row_cross | 2026-09-19 13:52:49.800789+00
+exec.per_row_fill | 2026-09-19 13:52:49.800789+00
+exec.per_row_held | 2026-09-19 13:52:49.800789+00
+exec.per_row_load_fail | 2026-09-19 13:52:49.800789+00
+exec.per_row_n | 2026-09-19 13:52:49.800789+00
+exec.per_row_open | 2026-09-19 13:52:49.800789+00
+exec.per_row_other | 2026-09-19 13:52:49.800789+00
+exec.per_row_reanchor | 2026-09-19 13:52:49.800789+00
+exec.phase_batch_ms | 2026-09-19 13:52:49.800789+00
+exec.phase_books_ms | 2026-09-19 13:52:49.800789+00
+exec.phase_commit_prev_ms | 2026-09-19 13:52:49.800789+00
+exec.phase_decide_ms | 2026-09-19 13:52:49.800789+00
+exec.phase_intake_ms | 2026-09-19 13:52:49.800789+00
+exec.phase_load_ms | 2026-09-19 13:52:49.800789+00
+exec.phase_per_row_ms | 2026-09-19 13:52:49.800789+00
+exec.phase_place_ms | 2026-09-19 13:52:49.800789+00
+exec.phase_samples_ms | 2026-09-19 13:52:49.800789+00
+exec.phase_tape_ms | 2026-09-19 13:52:49.800789+00
+exec.phase_walk_ms | 2026-09-19 13:52:49.800789+00
+exec.placed | 2026-09-19 13:52:49.800789+00
+exec.prints_cached_rows | 2026-09-19 13:52:49.800789+00
+exec.prints_cached_tickers | 2026-09-19 13:52:49.800789+00
+exec.prints_cap_fallbacks | 2026-09-19 13:52:49.800789+00
+exec.prints_full_reads | 2026-09-19 13:52:49.800789+00
+exec.prints_incremental_rows | 2026-09-19 13:52:49.800789+00
+exec.signal_to_order_ms | 2026-09-19 13:02:49.800839+00
+exec.skipped | 2026-09-19 13:06:34.800742+00
+exec.tape_batch_min | 2026-09-19 13:52:49.800789+00
+exec.tape_delta_rows | 2026-09-19 13:52:49.800789+00
+exec.tape_lag_tickers | 2026-09-19 13:52:49.800789+00
+exec.tape_print_rows | 2026-09-19 13:52:49.800789+00
+exec.tape_tickers_n | 2026-09-19 13:52:49.800789+00
+exec.walk_budget_ms | 2026-09-19 13:52:49.800789+00
+exec.walk_deferred_n | 2026-09-19 13:52:49.800789+00
+exec.walk_tickers_n | 2026-09-19 13:52:49.800789+00
+exec.working_rows | 2026-09-19 13:52:49.800789+00
+exec.ws_event_age_s | 2026-09-19 13:52:49.800789+00
+exec.ws_event_ahead_s | 2026-09-19 13:52:49.800789+00
+host.disk_free_gb | 2026-09-19 09:22:27.754987+00
+host.disk_total_gb | 2026-09-19 09:22:27.754987+00
+host.mem_available_mb | 2026-09-19 09:22:27.754987+00
+match.rate | 2026-09-19 09:22:27.754987+00
+match.unmatched | 2026-09-19 09:22:27.754987+00
+normalize.backlog_age_s | 2026-09-19 13:50:34.601038+00
+normalize.backlog_ids | 2026-09-19 13:50:34.601038+00
+pricing.candidates | 2026-09-19 13:50:34.601038+00
+pricing.fair_values | 2026-09-19 13:50:34.601038+00
+pricing.feed_lag_s | 2026-09-19 13:50:34.601038+00
+pricing.no_fair | 2026-09-19 06:27:57.754329+00
+pricing.rejected | 2026-09-19 13:00:04.60109+00
+pricing.rescore_suppressed | 2026-09-19 06:27:57.754329+00
+pricing.staleness_median_s | 2026-09-19 13:50:34.601038+00
+recorder.credits_remaining | 2026-09-19 13:50:34.601038+00
+recorder.errors | 2026-09-19 13:50:34.601038+00
+recorder.fetched | 2026-09-19 13:50:34.601038+00
+recorder.malloc_trim_mb | 2026-09-19 13:50:34.601038+00
+recorder.phase_ms | 2026-09-19 13:50:34.601038+00
+recorder.rss_mb | 2026-09-19 13:50:34.601038+00
+recorder.tick_ms | 2026-09-19 13:50:34.601038+00
+recorder.trade_gaps | 2026-09-19 13:50:34.601038+00
+serve.snapshot_ms | 2026-09-19 13:54:04.861934+00
+ws.acks_out_of_sequence | 2026-09-19 13:53:44.329523+00
+ws.events_per_min | 2026-09-19 13:53:44.329523+00
+ws.gaps | 2026-09-19 13:53:44.329523+00
+ws.reconnects | 2026-09-19 13:53:44.329523+00
+ws.seq_advances_accounted | 2026-09-19 13:53:44.329523+00
+ws.sink_lag_s | 2026-09-19 13:53:44.329523+00
+ws.subscribed_tickers | 2026-09-19 13:53:44.329523+00
+ws.tape_covered_frac | 2026-09-19 13:00:04.60109+00
+ws.trades_per_min | 2026-09-19 13:53:44.329523+00
+282
+ff363c8ac08d | 2026-09-19 13:52:49.800789+00
+5632da729fa7 | 2026-09-19 13:52:49.800789+00
+f259ca109084 | 2026-09-19 13:52:49.800789+00
+e82fcd0a1e99 | 2026-09-08 12:31:58.93176+00
+41
+duplicate_trades | pass
+clv_p_used_matches_order_prob | pass
+settle_errors_24h | pass
+derived_without_venue_row_48h | pass
+build_sha_drift | pass
+orders_open_past_expiry | pass
+fills_without_print | pass
+gate_rows_one_gate_variant | pass
+fair_values_negative_staleness | pass
+runs_taker_side_missing_24h | pass
+orders_without_place_event | pass
+intents_without_order_or_skip | fail
+fill_contracts_exceed_order_contracts | pass
+orders_filled_exceeds_contracts | pass
+settlement_result_mismatch | pass
+fair_values_negative_feed_lag | pass
+benchmarks_source_after_target | pass
+fills_outside_placement_window | pass
+markouts_at_after_horizon | pass
+metric_samples_negative_24h | pass
+operator_events_empty_summary_24h | pass
+order_watch_negative_queue_24h | pass
+equity_mtm_coverage_out_of_range_24h | pass
+game_score_went_down_24h | pass
+check_results_unknown_status_25h | pass
+report_runs_generated_in_future | pass
+report_cells_orphan | pass
+2026 | 38 | t | 2026-09-19 11:22:27.755166+00
+2026 | 38 | t | 2026-09-19 05:22:27.755155+00
+2026 | 38 | t | 2026-09-18 22:22:27.755007+00
+== BLOCK 4 L141 :: Phase 4 additions (after the authenticated adapter, backups and Alembic ship)
+prod | GET | 24
+2
+kalshi | demo | ok |  | 2026-09-09 15:54:44.71089+00 | 2026-09-09 15:54:44.71089+00
+kalshi_rfq | prod | ok |  | 2026-09-12 05:26:38.387488+00 | 2026-09-12 05:26:38.387488+00
+encrypt | ok | 1811363551 | 2026-09-19 08:42:35.938328+00 | 05:11:39.352773
+encrypt | ok | 9335 | 2026-09-19 08:42:27.786775+00 | 05:11:47.504326
+forever | ok | 9335 | 2026-09-19 08:33:24+00 | 05:20:51.291101
+nightly | ok | 1811363551 | 2026-09-19 08:33:19+00 | 05:20:56.291101
+encrypt | ok | 1720944552 | 2026-09-18 08:34:21.702556+00 | 1 day 05:19:53.588545
+encrypt | ok | 9335 | 2026-09-18 08:33:59.384926+00 | 1 day 05:20:15.906175
+3
+5632da729fa7 | -0.0063 | f
+f259ca109084 | -0.0064 | f
+ff363c8ac08d | 0.0000 | f
+0
+ | 
+["sharp_two_sided", "sharp_direct", "wide_band", "constrained", "nfl_only", "no_velocity", "sharp_plus_derived"] | {"nfl_only": 0, "wide_band": 0, "constrained": 0, "no_velocity": 0, "sharp_direct": 0, "sharp_two_sided": 0, "sharp_plus_derived": 0}
+["sharp_two_sided", "sharp_direct", "sharp_plus_derived", "wide_band", "constrained", "nfl_only", "no_velocity"] | {"nfl_only": 0, "wide_band": 0, "constrained": 0, "no_velocity": 0, "sharp_direct": 0, "sharp_two_sided": 0, "sharp_plus_derived": 0}
+0015_phase6d1_exec_viability
+== BLOCK 6 L248 :: Phase 5 additions (after the research layer ships)
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+== BLOCK 8 L317 :: Phase 6A additions (after the capsule, the correction manifest and dormant gate eligibility ship)
+5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-15 05:41:09.998648+00 | t
+5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-15 05:41:09.998648+00 | f
+5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-15 05:41:09.998648+00 | f
+0
+== BLOCK 11 L367 :: Phase 6B additions (after the execution repairs, the audit, the re-score and Amendment 6 ship)
+1878 | 70557.76 | 1878
+38.92 | 1557550170 | 1529.92 | 11006049.45 | 154403731.18
+4 | 77.84 | 4
+0
+0
+511
+0
+0
+0
+dirty | 38
+observation | 171
+5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-15 05:41:09.998648+00 | t
+5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-15 05:41:09.998648+00 | f
+5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-15 05:41:09.998648+00 | f
+0
+0
+exec.nw_pending | 29712.000000 | 2026-09-19 13:55:19.800766+00
+exec.nw_pending | 29712.000000 | 2026-09-19 13:54:19.801072+00
+exec.nw_pending | 29712.000000 | 2026-09-19 13:52:49.800789+00
+== BLOCK 13 L514 :: Phase 6D.1 additions (after the execution-viability experiment ships)
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+== BLOCK 14 L590 :: Layer 2b: invariants and plausibility bands
+0
+0
+0
+128551
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1733
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0

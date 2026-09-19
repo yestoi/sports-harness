@@ -1,0 +1,49 @@
+shell_at_utc=2026-09-19T13:54:03Z (08:54 CT)
+== status
+NAME                            IMAGE                                                                              COMMAND                  SERVICE        CREATED          STATUS                 PORTS
+sports-harness-app-backup-1     postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94   "docker-entrypoint.s…"   app-backup     6 days ago       Up 4 days              5432/tcp
+sports-harness-app-exec-1       sports-release/app:01e7b0c                                                         "harness exec"           app-exec       2 hours ago      Up 2 hours (healthy)   
+sports-harness-app-research-1   sports-release/app:01e7b0c                                                         "harness research-wo…"   app-research   28 minutes ago   Up 28 minutes          
+sports-harness-app-run-1        sports-release/app:01e7b0c                                                         "harness run"            app-run        2 hours ago      Up 2 hours             
+sports-harness-app-serve-1      sports-release/app:01e7b0c                                                         "harness serve --por…"   app-serve      2 hours ago      Up 2 hours (healthy)   127.0.0.1:8180->8080/tcp
+sports-harness-app-ws-1         sports-release/app:01e7b0c                                                         "harness ws-record"      app-ws         2 hours ago      Up 2 hours             
+sports-harness-postgres-1       postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94   "docker-entrypoint.s…"   postgres       6 days ago       Up 4 days (healthy)    5432/tcp
+{"status":"ok","last_run_at":"2026-09-19T13:53:04.601076+00:00","last_status":"running","seconds_since":58,"credits_remaining":4816999,"credits_budget":5000000,"credits_low":false,"venue_limits":null,"build":"01e7b0c"}
+== df/free
+/dev/mapper/root  952G  189G  759G  20% /srv/sports-harness
+               total        used        free      shared  buff/cache   available
+Mem:           31904       12190        2794         916       19761       19714
+Swap:          63808        3161       60647
+== dashboard section (10m)
+0
+== ERROR lines 10m
+== app-run
+== app-serve
+== app-ws
+== app-exec
+== app-research
+== healthz
+{"status":"ok","last_run_at":"2026-09-19T13:53:04.601076+00:00","last_status":"running","seconds_since":58,"credits_remaining":4816999,"credits_budget":5000000,"credits_low":false,"venue_limits":null,"build":"01e7b0c"}
+== backups
+36G	/srv/sports-harness/backups
+248K	/srv/sports-harness/backups/forever
+25G	/srv/sports-harness/backups/nightly
+8.5G	/srv/sports-harness/backups/partitions
+2.6G	/srv/sports-harness/backups/weekly
+-rw-r--r-- 2 trey trey       1917 Sep 18 03:32 harness-nightly-20260918T083000Z.meta.json
+-rw-r--r-- 2 trey trey          0 Sep 18 03:34 harness-nightly-20260918T083000Z.ok
+-rw-r--r-- 1 trey trey 1811363551 Sep 19 03:32 harness-nightly-20260919T083000Z.dump
+-rw-r--r-- 2 trey trey 1811805975 Sep 19 03:42 harness-nightly-20260919T083000Z.dump.age
+-rw-r--r-- 2 trey trey       1921 Sep 19 03:33 harness-nightly-20260919T083000Z.meta.json
+-rw-r--r-- 2 trey trey          0 Sep 19 03:42 harness-nightly-20260919T083000Z.ok
+0
+== research
+NAME                            IMAGE                        COMMAND                  SERVICE        CREATED          STATUS          PORTS
+sports-harness-app-research-1   sports-release/app:01e7b0c   "harness research-wo…"   app-research   28 minutes ago   Up 28 minutes   
+{"asctime": "2026-09-19 13:51:58,115", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, anno
+{"asctime": "2026-09-19 13:52:28,309", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, anno
+{"asctime": "2026-09-19 13:52:58,451", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, anno
+{"asctime": "2026-09-19 13:53:28,589", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, anno
+{"asctime": "2026-09-19 13:53:58,725", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, anno
+== snap
+{"now":"2026-09-19T13:54:03.653505+00:00","snapshots":[{"name":"floor","generated_at":"2026-09-19T13:52:34.861956+00:00","age_s":88.791549,"cadence_s":120,"elapsed_ms":503,"error":null},{"name":"gate","generated_at":"2026-09-19T13:52:04.861844+00:00","age_s":118.791661,"cadence_s":300,"elapsed_ms":2,"error":null},{"name":"pulse","generated_at":"2026-09-19T13:53:04.861891+00:00","age_s":58.791614,"cadence_s":60,"elapsed_ms":99,"error":null},{"name":"study:2026-37","generated_at":"2026-09-14T14:04:22.837503+00:00","age_s":431380.816002,"cadence_s":600,"elapsed_ms":177,"error":null},{"name":"study:2026-38","generated_at":"2026-09-19T13:48:04.862121+00:00","age_s":358.791384,"cadence_s":600,"elapsed_ms":109,"error":null},{"name":"ticket","generated_at":"2026-09-19T13:53:34.861879+00:00","age_s":28.791626,"cadence_s":120,"elapsed_ms":7,"error":null}]}

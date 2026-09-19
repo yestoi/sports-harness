@@ -1,0 +1,10 @@
+summary_at_utc=2026-09-19T14:03:13Z
+PASS build: page 01e7b0c vs deploy 01e7b0c
+PASS sections: no section errors
+PASS page_time: / 3.4s, /api/summary 3.6s
+PASS run_id: page 27639 vs sql 27639
+PASS ws_last_event: page age 7s vs sql 5s
+PASS candidates_24h: every active variant within 5 % (or 20 rows) of SQL
+PASS kill_switch: active=False
+PASS credits_numeric: credits=4816301
+PASS data_quality_shape: section rendered (empty is allowed in quiet hours)

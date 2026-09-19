@@ -1,0 +1,104 @@
+daily_at_utc=2026-09-19T13:56:03Z (08:56 CT)
+== df
+/dev/mapper/root  952G  189G  759G  20% /srv/sports-harness
+== free -m
+               total        used        free      shared  buff/cache   available
+Mem:           31904       12060        1155         916       21530       19844
+Swap:          63808        3160       60647
+swap:
+SwapTotal:      65340280 kB
+SwapFree:       62103448 kB
+== sql
+SET
+?column? pg_size_pretty ?column?
+db_size 170 GB 182.0 GB decimal
+(1 row)
+?column? ts value
+db.size_gb sample 2026-09-13 04:02:29.762524-05 99.464200
+db.size_gb sample 2026-09-14 05:36:24.861016-05 121.878400
+db.size_gb sample 2026-09-15 04:06:16.646967-05 129.921900
+db.size_gb sample 2026-09-16 04:56:09.037257-05 132.366700
+db.size_gb sample 2026-09-17 04:02:12.224926-05 134.562800
+db.size_gb sample 2026-09-18 04:03:58.971644-05 147.510900
+db.size_gb sample 2026-09-19 04:22:27.754987-05 168.865000
+(7 rows)
+?column? value ts
+credits_now 4816823.000000 2026-09-19 08:53:04.601076-05
+(1 row)
+?column? value ts
+credits_24h_ago 4884405.000000 2026-09-18 08:55:57.754393-05
+(1 row)
+?column? age_s last_loop_ms p95_loop_ms loops_skipped loops open_orders coalesce executor_version last_loop_at
+exec_heartbeat 44 23136 33315 7335 50386 0 null 4.5 2026-09-19 08:55:19.800766-05
+(1 row)
+?column? count round round round
+exec_loop_ms_last_hour 49 26056 32851 38749
+(1 row)
+?column? tape walk batch per_row delta_rows full_reads
+exec_phase_last_hour 20689 1463 412 751 1206824 
+(1 row)
+?column? id started_at status build_sha
+last_run 27636 2026-09-19 08:55:34.601048-05 running 01e7b0c
+(1 row)
+?column? id started_at finished_at status budget_exhausted
+settle_last 300 2026-09-19 08:36:04.60141-05 2026-09-19 08:36:49.855276-05 ok f
+settle_last 299 2026-09-19 07:36:04.635058-05 2026-09-19 07:36:46.459635-05 ok f
+(2 rows)
+?column? string_agg
+operator_events_24h budget_exhausted x5, ws_connect x2, check_failed x1, deploy x1, snapshot_disabled x1, ws_disconnect x1
+(1 row)
+?column? count
+live_games 0
+(1 row)
+?column? string_agg
+next_kickoffs Sat 10:30 ncaaf, Sat 10:59 ncaaf, Sat 11:00 ncaaf, Sat 11:00 ncaaf, Sat 11:00 ncaaf, Sat 11:00 ncaaf
+(1 row)
+?column? day sum sum sum
+spend_today_ct 2026-09-19 24.5597 0.0000 384
+(1 row)
+?column? ?column? sum sum
+spend_by_kind_model_today veto/claude-sonnet-5 11.0203 192
+spend_by_kind_model_today veto/claude-opus-5 13.5394 192
+(2 rows)
+?column? day sum sum
+spend_yesterday 2026-09-18 24.5576 414
+(1 row)
+?column? sum min max
+spend_iso_week 146.8192 2026-09-14 2026-09-19
+(1 row)
+?column? count
+kill_switch_events 0
+(1 row)
+== research worker refusals today
+0
+== ERROR lines last hour per service (messages)
+-- app-run
+2026-09-19 13:04:03,182 harness.recorder.tick kalshi trades failed
+-- app-serve
+-- app-ws
+-- app-exec
+-- app-research
+== kill switch
+{'status': 'ok', 'kill_switch': None, 'credits_remaining': 4816823, 'credits_low': False, 'build': '01e7b0c'}
+== row 83 swap read (vmstat 5 3; container RSS)
+procs -----------memory---------- ---swap-- -----io---- -system-- -------cpu-------
+ r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st gu
+ 2  0 3236832 1193676   20 22047388 16   31  1639 19347 6490    8  5  1 91  2  0  0
+ 2  0 3236832 1181988   20 22048068  0    0    17   693 4106 6288  6  1 93  0  0  0
+ 2  0 3236832 1128752   20 22059116  0    0   122 25264 6748 15273 7  1 92  0  0  0
+sports-harness-app-research-1 92.01MiB / 31.16GiB
+sports-harness-app-run-1 168MiB / 31.16GiB
+sports-harness-app-ws-1 82.43MiB / 31.16GiB
+sports-harness-app-serve-1 191MiB / 31.16GiB
+sports-harness-app-exec-1 4.192GiB / 31.16GiB
+sports-harness-app-backup-1 728KiB / 31.16GiB
+sports-harness-postgres-1 6.485GiB / 31.16GiB
+== continued 2026-09-19T14:04:28Z: 6D.1 daily rows 4 and 7
+veto_decisions_today_by_decision | veto_skipped_budget | 24392
+veto_decisions_today_by_decision | proceed | 354
+exp_veto_coverage_today | 2026-09-19 | ncaaf | inside_6h | 0 | 1675
+exp_veto_coverage_today | 2026-09-19 | ncaaf | outside_6h | 354 | 20721
+exp_veto_coverage_today | 2026-09-19 | nfl | outside_6h | 0 | 1996
+exp_veto_coverage_cols | day,decided,reserved,sport,window_label
+== du exp
+du: cannot access '/srv/sports-harness/exp': No such file or directory
