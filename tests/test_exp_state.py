@@ -15,6 +15,8 @@ Every expectation is written from the fixture's own stamps, never read back from
 test (6B's I-13 rule).
 """
 import uuid
+from dataclasses import replace
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -38,6 +40,11 @@ VARIANT_CFG = {VARIANT: {"stale_s": 180, "apply_caps": False, "bankroll": 3000,
                          "per_bet_cap": 0.03, "per_game_cap": 0.05, "daily_cap": 0.15,
                          "max_open": 200}}
 REPRICE_TICKER = "KXNFLGAME-26SEP20DETBAL-DET"
+FILL_TICKER = "KXFILL-1"
+#: The two derived manifest fields this test freezes a run under; `storage.rebuild_manifest`
+#: is handed the same two, so an unchanged run resumes and a changed setting does not (§1.2).
+CODE_SHA = "0" * 40
+SCHEMA_VERSION = "0015"
 
 
 # --- the fixture tape --------------------------------------------------------------------------
@@ -194,12 +201,23 @@ def _seed(session, *, wanted_orders=None):
 
 # --- the run helpers ---------------------------------------------------------------------------
 
-def _manifest(run_id: str, *, cadence_allowance=None) -> Manifest:
+def _exec(s):
+    return plan_mod.ExecSettings.from_settings(s)
+
+
+def _manifest(run_id: str, *, exec_settings, cadence_allowance=None) -> Manifest:
     """One run's frozen manifest. Its fields describe the **run**, never the chunk, so every
-    chunk of one run freezes the same hash (§1.2)."""
+    chunk of one run freezes the same hash (§1.2).
+
+    `baseline_settings` is the execution settings document `storage.rebuild_manifest` rebuilds
+    at resume time, so a run frozen here is resumable by the real code path and a changed
+    setting is a refusal rather than a silently different definition (C1).
+    """
     return Manifest(
-        run_id=run_id, code_sha="0" * 40, schema_version="0015", simulator_version="6b",
-        pricing_version="5", baseline_settings={"stale_s": 180}, variant_configs=VARIANT_CFG,
+        run_id=run_id, code_sha=CODE_SHA, schema_version=SCHEMA_VERSION,
+        simulator_version="6b",
+        pricing_version="5", baseline_settings=storage.settings_document(exec_settings),
+        variant_configs=VARIANT_CFG,
         arms=({"arm_id": "A", "label": "baseline", "cadence_allowance": cadence_allowance},
               {"arm_id": "B", "label": "cadence", "cadence_allowance": cadence_allowance}),
         arm_hashes=("a" * 64, "b" * 64), capture_hashes={"orders": {"sha256": "c" * 64}},
@@ -234,12 +252,12 @@ def _instants(session, *, since, until):
 
 
 def run_arm(session, s, *, arm="A", since, until, resume_of=None, kill_after_instants=None,
-            wanted_orders=None, policy=None) -> str:
+            wanted_orders=None, policy=None, instants=None, mismatch_max=None) -> str:
     """Freeze a manifest, open a writer, step the retained instants of `[since, until)` and
     return the run id. A resume continues the **same** run id from its own checkpoint."""
     _seed(session, wanted_orders=wanted_orders)
     run_id = resume_of or str(uuid.uuid4())
-    manifest = _manifest(run_id)
+    manifest = _manifest(run_id, exec_settings=_exec(s))
     manifest_hash = manifest.freeze()
     writer = _writer(session, run_id)
     if resume_of is None:
@@ -250,30 +268,36 @@ def run_arm(session, s, *, arm="A", since, until, resume_of=None, kill_after_ins
     state = storage.resume(session, run_id=run_id, arm_id=arm, manifest=manifest)
     if state is not None:
         adapter.restore(runner, state)
-    adapter.run_chunk(session, runner, _instants(session, since=since, until=until),
+    adapter.run_chunk(session, runner,
+                      list(instants) if instants is not None
+                      else _instants(session, since=since, until=until),
                       writer=writer, manifest_hash=manifest_hash,
-                      stop_after=kill_after_instants)
+                      stop_after=kill_after_instants, mismatch_max=mismatch_max)
     writer.commit()
     return run_id
 
 
 def run_two_arms(session, s, *, instants) -> str:
-    """Arms A and B in **one** process and one transaction, on the same tape (§1.4)."""
+    """Arms A and B in **one** process and one transaction, on the same tape (§1.4).
+
+    Both arms run the **same** policy on the same instants (fix round 1, ruling D23/I5): two
+    arms that place different orders cannot tell isolation from divergence, while two arms that
+    place the same orders make every shared byte visible -- a shared open-order list, capacity
+    counter, order-id counter or ledger would show up immediately as a missing or a merged row.
+    """
     _seed(session)
     run_id = str(uuid.uuid4())
-    manifest = _manifest(run_id)
+    manifest = _manifest(run_id, exec_settings=_exec(s))
     manifest_hash = manifest.freeze()
     writer = _writer(session, run_id)
     storage.write_run(writer, manifest=manifest, manifest_hash=manifest_hash, created_at=NOW)
     storage.write_arms(writer, [
         {"run_id": run_id, "arm_id": "A", "label": "baseline", "spec": {"policy": "baseline"},
          "spec_hash": "a" * 64},
-        {"run_id": run_id, "arm_id": "B", "label": "cadence", "spec": {"per_variant_slots": 1},
+        {"run_id": run_id, "arm_id": "B", "label": "baseline", "spec": {"policy": "baseline"},
          "spec_hash": "b" * 64}])
-    # B differs in exactly one parameter, which is what §1.6 says an arm may differ in.
     runners = [_runner(session, s, run_id=run_id, arm="A"),
-               _runner(session, s, run_id=run_id, arm="B",
-                       policy=plan_mod.HoldingPolicy(name="slots", per_variant_slots=1))]
+               _runner(session, s, run_id=run_id, arm="B")]
     for runner in runners:
         adapter.run_chunk(session, runner, list(instants), writer=writer,
                           manifest_hash=manifest_hash)
@@ -281,39 +305,99 @@ def run_two_arms(session, s, *, instants) -> str:
     return run_id
 
 
-def changed_copy(session, run_id: str) -> Manifest:
+def changed_copy(s, run_id: str) -> Manifest:
     """The same run's manifest with one field altered, so its hash differs (§1.2)."""
-    return _manifest(run_id, cadence_allowance=1000)
+    return _manifest(run_id, exec_settings=_exec(s), cadence_allowance=1000)
 
 
-def _rows(session, run_id, arm_id, table="exp_order"):
+def _rows(session, run_id, arm_id):
+    """The arm's `exp_order` rows, projected through **its own** order id (D22).
+
+    `exp_order.id` is the database's surrogate key, so two runs of the same tape hold the same
+    orders under different ids; `arm_order_id` is the id the arm issued, which is what §1.4's
+    "the same run chunked two ways writes the same rows" is a statement about.
+    """
     return session.execute(text(
-        f"select id, ticker, prob, contracts, status, placed_at from {table} "
-        "where run_id = :r and arm_id = :a order by placed_at, id"),
+        "select arm_order_id, ticker, prob, contracts, status, placed_at, cancel_reason, "
+        "filled_contracts from exp_order "
+        "where run_id = :r and arm_id = :a order by placed_at, arm_order_id"),
         {"r": run_id, "a": arm_id}).all()
+
+
+def _row_ids(session, run_id, arm_id) -> set[int]:
+    return {row.id for row in session.execute(text(
+        "select id from exp_order where run_id = :r and arm_id = :a"),
+        {"r": run_id, "a": arm_id}).all()}
+
+
+def _fills(session, run_id, arm_id):
+    """§1.4's fill set for one arm, on §2's own invariant join `o.id = f.exp_order_id` (D22).
+
+    Projected through the order's own id and ordered by the tape's stamp, so two chunkings of
+    one run are comparable row for row and neither side can be empty without the caller seeing
+    it.
+    """
+    return session.execute(text(
+        "select o.arm_order_id, o.ticker, f.filled_at, f.contracts, f.prob, f.fill_method, "
+        "f.source_trade_id, f.through from exp_fill f "
+        "join exp_order o on o.id = f.exp_order_id "
+        "where f.run_id = :r and f.arm_id = :a order by f.filled_at, f.id"),
+        {"r": run_id, "a": arm_id}).all()
+
+
+_CHECKPOINT_ROW = text(
+    "select (state->>'open_orders_count')::int as open_orders, cursor_event_id, "
+    "md5(state::text) as digest, manifest_hash from exp_checkpoint "
+    "where run_id = :r and arm_id = :a")
+
+
+def _checkpoint(session, run_id, arm_id):
+    return session.execute(_CHECKPOINT_ROW, {"r": run_id, "a": arm_id}).one()
 
 
 # --- §5's list, one case each ------------------------------------------------------------------
 
+TWO_INSTANTS = [NOW, NOW + STEP]
+
+
 def test_two_arms_in_one_process_cannot_see_each_others_orders(db_session, env_settings):
-    run_id = run_two_arms(db_session, env_settings, instants=[NOW, NOW + STEP])
+    """Two arms of one run, same policy, same instants: same decisions, separate rows.
+
+    The assertion is strict (fix round 1, ruling D23/I5): every row of A is a row of its own,
+    A's set is exactly B's set projected through each arm's own order ids, and both equal what
+    the arm produces alone on the same tape -- so nothing either arm holds moved because the
+    other placed.
+    """
+    run_id = run_two_arms(db_session, env_settings, instants=TWO_INSTANTS)
     a, b = _rows(db_session, run_id, "A"), _rows(db_session, run_id, "B")
     assert a and b
-    assert {r.id for r in a}.isdisjoint({r.id for r in b}) or len(a) != len(b)
+    assert a == b                                     # identical arms, identical decisions
+    assert _row_ids(db_session, run_id, "A").isdisjoint(_row_ids(db_session, run_id, "B"))
+    solo = run_arm(db_session, env_settings, arm="A", since=NOW, until=NOW + 2 * STEP,
+                   instants=TWO_INSTANTS)
+    assert _rows(db_session, solo, "A") == a          # B's presence moved nothing of A's
     assert db_session.execute(text(
         "select count(*) from exp_order where run_id = :r and arm_id not in ('A','B')"),
         {"r": run_id}).scalar() == 0
 
 
 def test_two_arms_cannot_see_each_others_capacity_counter_or_cursor(db_session, env_settings):
-    run_id = run_two_arms(db_session, env_settings, instants=[NOW, NOW + STEP])
-    counters = db_session.execute(text(
-        "select arm_id, (state->>'open_orders_count')::int as open_orders, cursor_event_id "
-        "from exp_checkpoint where run_id = :r order by arm_id"), {"r": run_id}).all()
-    assert [c.arm_id for c in counters] == ["A", "B"]
-    assert counters[0].open_orders != counters[1].open_orders or \
-        counters[0].cursor_event_id != counters[1].cursor_event_id
-    assert len({id(c) for c in counters}) == 2          # two rows, never one shared counter
+    """Each arm's checkpoint carries **its own** counter and cursor: one row each, each equal
+    to what that arm alone produces, and neither the sum nor the other arm's number."""
+    run_id = run_two_arms(db_session, env_settings, instants=TWO_INSTANTS)
+    a, b = _checkpoint(db_session, run_id, "A"), _checkpoint(db_session, run_id, "B")
+    assert db_session.execute(text(
+        "select count(*) from exp_checkpoint where run_id = :r"), {"r": run_id}).scalar() == 2
+    resting = dict(db_session.execute(text(
+        "select arm_id, count(*) from exp_order where run_id = :r and status = 'open' "
+        "group by 1"), {"r": run_id}).all())
+    assert a.open_orders == resting["A"] and b.open_orders == resting["B"]
+    assert a.open_orders + b.open_orders == resting["A"] + resting["B"]   # never the sum each
+    solo = run_arm(db_session, env_settings, arm="A", since=NOW, until=NOW + 2 * STEP,
+                   instants=TWO_INSTANTS)
+    alone = _checkpoint(db_session, solo, "A")
+    assert (a.open_orders, a.cursor_event_id) == (alone.open_orders, alone.cursor_event_id)
+    assert (b.open_orders, b.cursor_event_id) == (alone.open_orders, alone.cursor_event_id)
 
 
 def test_three_one_hour_chunks_equal_one_three_hour_chunk_row_for_row(db_session, env_settings):
@@ -323,6 +407,13 @@ def test_three_one_hour_chunks_equal_one_three_hour_chunk_row_for_row(db_session
         chunked = run_arm(db_session, env_settings, arm="A", since=NOW + timedelta(hours=hour),
                           until=NOW + timedelta(hours=hour + 1), resume_of=chunked)
     assert _rows(db_session, chunked, "A") == _rows(db_session, whole, "A")
+    # §1.4 is about the fills too, and an equality of two empty sets proves nothing: the fill
+    # set is asserted non-empty and against the fixture's own print (fix round 1, C3).
+    fills = _fills(db_session, whole, "A")
+    assert _fills(db_session, chunked, "A") == fills
+    assert [(row.ticker, row.filled_at, row.contracts, row.prob, row.source_trade_id)
+            for row in fills] == [(FILL_TICKER, NOW + timedelta(minutes=10), Decimal("20.00"),
+                                   Decimal("0.4800"), "t-4471")]
 
 
 def test_a_resumed_run_after_a_mid_slice_kill_equals_the_uninterrupted_run(db_session,
@@ -333,6 +424,26 @@ def test_a_resumed_run_after_a_mid_slice_kill_equals_the_uninterrupted_run(db_se
     resumed = run_arm(db_session, env_settings, arm="A", since=NOW,
                       until=NOW + timedelta(hours=2), resume_of=killed)
     assert _rows(db_session, resumed, "A") == _rows(db_session, whole, "A")
+    fills = _fills(db_session, whole, "A")
+    assert _fills(db_session, resumed, "A") == fills
+    # The kill lands at instant 17, before the print at NOW + 10 min, so the resumed run has to
+    # produce that fill after the boundary or the equality above would be two empty sets.
+    assert [row.source_trade_id for row in fills] == ["t-4471"]
+
+
+def test_the_recorded_print_is_credited_once_across_the_whole_run(db_session, env_settings):
+    """§1.5 end to end: the tape holds one 20-contract print, and however many orders the arm
+    rests on that key over an hour, the run's fills on it total the print and no more."""
+    run_id = run_arm(db_session, env_settings, arm="A", since=NOW, until=NOW + timedelta(hours=1))
+    taken = [row for row in _fills(db_session, run_id, "A")
+             if row.source_trade_id == "t-4471"]
+    assert [(row.ticker, row.contracts, row.prob, row.filled_at, row.fill_method)
+            for row in taken] == [(FILL_TICKER, Decimal("20.00"), Decimal("0.4800"),
+                                   NOW + timedelta(minutes=10), "queue_model")]
+    allocation = db_session.execute(text(
+        "select available, allocated from exp_allocation where run_id = :r "
+        "and source_trade_id = 't-4471'"), {"r": run_id}).one()
+    assert (allocation.available, allocation.allocated) == (Decimal("20.00"), Decimal("20.00"))
 
 
 def test_capacity_stays_occupied_while_an_order_rests(db_session, env_settings):
@@ -340,9 +451,7 @@ def test_capacity_stays_occupied_while_an_order_rests(db_session, env_settings):
     resting = db_session.execute(text(
         "select count(*) from exp_order where run_id = :r and status = 'open'"),
         {"r": run_id}).scalar()
-    occupied = db_session.execute(text(
-        "select (state->>'open_orders_count')::int from exp_checkpoint "
-        "where run_id = :r and arm_id = 'A'"), {"r": run_id}).scalar()
+    occupied = _checkpoint(db_session, run_id, "A").open_orders
     assert occupied == resting and resting > 0
 
 
@@ -352,23 +461,36 @@ def test_capacity_is_released_on_cancel_on_expiry_and_on_fill(db_session, env_se
         "select status, count(*) from exp_order where run_id = :r and status <> 'open' "
         "group by 1"), {"r": run_id}).all()
     assert {row.status for row in closed} == {"cancelled", "expired", "filled"}
-    assert db_session.execute(text(
-        "select (state->>'open_orders_count')::int from exp_checkpoint "
-        "where run_id = :r and arm_id = 'A'"), {"r": run_id}).scalar() == db_session.execute(
-            text("select count(*) from exp_order where run_id = :r and status = 'open'"),
-            {"r": run_id}).scalar()
+    assert _checkpoint(db_session, run_id, "A").open_orders == db_session.execute(
+        text("select count(*) from exp_order where run_id = :r and status = 'open'"),
+        {"r": run_id}).scalar()
 
 
 def test_the_hundred_and_fifty_first_simultaneous_order_is_blocked_inside_one_arm(db_session,
                                                                                  env_settings):
-    run_id = run_arm(db_session, env_settings, arm="A", since=NOW, until=NOW + STEP,
-                     wanted_orders=151)
+    """One `capacity` row per blocked key per **episode**, not per instant (D23/I4).
+
+    The same intent is refused at both instants of this run; a row per instant would write the
+    same fact every 15 s for as long as the pool stayed full, and `exp_mismatch_max` would then
+    stop runs on their own bookkeeping. `mismatch_max=0` is passed to prove the ceiling counts
+    unexplained rows only: every row here is explained, and the run does not stop.
+    """
+    run_id = run_arm(db_session, env_settings, arm="A", since=NOW, until=NOW + 2 * STEP,
+                     instants=TWO_INSTANTS, wanted_orders=151, mismatch_max=0)
     assert db_session.execute(text(
         "select count(*) from exp_order where run_id = :r and status = 'open'"),
         {"r": run_id}).scalar() == 150
-    assert db_session.execute(text(
-        "select count(*) from exp_mismatch where run_id = :r and kind = 'capacity'"),
-        {"r": run_id}).scalar() == 1
+    rows = db_session.execute(text(
+        "select instant, explained, cause from exp_mismatch where run_id = :r "
+        "and kind = 'capacity'"), {"r": run_id}).all()
+    assert len(rows) == 1
+    assert rows[0].instant == NOW and rows[0].explained is True
+    assert rows[0].cause == plan_mod.EXEC_CAPACITY
+    # Both instants were stepped: the second wrote no second row rather than never happening.
+    checkpoint = db_session.execute(text(
+        "select state->'last_instant'->>'__t' as last from exp_checkpoint "
+        "where run_id = :r and arm_id = 'A'"), {"r": run_id}).scalar()
+    assert datetime.fromisoformat(checkpoint) == NOW + STEP
 
 
 def test_a_key_is_not_permanently_blocked_after_its_first_placement(db_session, env_settings):
@@ -380,33 +502,128 @@ def test_a_key_is_not_permanently_blocked_after_its_first_placement(db_session, 
 
 
 def test_there_is_no_fill_after_expiry(db_session, env_settings):
+    """§2's invariant query verbatim, which D22's surrogate key is what makes unambiguous."""
     run_id = run_arm(db_session, env_settings, arm="A", since=NOW, until=NOW + timedelta(hours=1))
     late = db_session.execute(text(
         "select count(*) from exp_fill f join exp_order o on o.id = f.exp_order_id "
-        "and o.run_id = f.run_id and o.arm_id = f.arm_id "
         "where f.run_id = :r and o.expiry is not null and f.filled_at > o.expiry"),
         {"r": run_id}).scalar()
     assert late == 0
+    assert _fills(db_session, run_id, "A")        # a zero over an empty set is not the case
 
 
 def test_a_repriced_order_is_a_new_row_at_the_back_of_the_queue(db_session, env_settings):
+    """The fixture's ladder is `[[0.4800, 10], [0.5000, 25]]`, so the queue each order joins is
+    the book's own count at **its** price: 10 for the first, 25 for the re-priced one."""
     run_id = run_arm(db_session, env_settings, arm="A", since=NOW, until=NOW + timedelta(hours=1))
     pair = db_session.execute(text(
-        "select id, prob, queue_ahead_at_place as queue_ahead, placed_at from exp_order "
-        "where run_id = :r and ticker = :t order by placed_at limit 2"),
+        "select arm_order_id, prob, queue_ahead_at_place as queue_ahead, placed_at "
+        "from exp_order where run_id = :r and ticker = :t order by placed_at limit 2"),
         {"r": run_id, "t": REPRICE_TICKER}).all()
-    assert pair[0].id != pair[1].id and pair[0].prob != pair[1].prob
-    assert pair[1].queue_ahead >= pair[0].queue_ahead     # the back of the queue, not its place
+    assert pair[0].arm_order_id != pair[1].arm_order_id
+    assert (pair[0].prob, pair[1].prob) == (Decimal("0.4800"), Decimal("0.5000"))
+    assert (pair[0].queue_ahead, pair[1].queue_ahead) == (Decimal("10.00"), Decimal("25.00"))
 
 
 def test_resume_refuses_a_changed_manifest_and_leaves_the_checkpoint_byte_identical(db_session,
                                                                                    env_settings):
     run_id = run_arm(db_session, env_settings, arm="A", since=NOW, until=NOW + STEP)
-    changed_manifest = changed_copy(db_session, run_id)
-    _CHECKPOINT = text("select md5(state::text), cursor_event_id, manifest_hash "
-                       "from exp_checkpoint where run_id = :r and arm_id = :a")
-    before = db_session.execute(_CHECKPOINT, {"r": run_id, "a": "A"}).one()
+    changed_manifest = changed_copy(env_settings, run_id)
+    before = _checkpoint(db_session, run_id, "A")
     with pytest.raises(ManifestMismatch):
         storage.resume(db_session, run_id=run_id, arm_id="A", manifest=changed_manifest)
-    after = db_session.execute(_CHECKPOINT, {"r": run_id, "a": "A"}).one()
-    assert after == before
+    assert _checkpoint(db_session, run_id, "A") == before
+
+
+def test_a_changed_execution_setting_makes_the_resume_refuse(db_session, env_settings):
+    """C1/ruling D21: `exp run` rebuilds the manifest for the code and settings about to step
+    the tape and resumes against **that**, so a changed `ExecSettings` field is a refusal.
+
+    The rebuild is asserted through `storage.rebuild_manifest` and `storage.resume`, which is
+    the pair `cli.run_cmd` calls; the command itself additionally needs the §4.7 role and the
+    exp secret, which `tests/test_exp_isolation.py` owns.
+    """
+    exec_settings = _exec(env_settings)
+    run_id = run_arm(db_session, env_settings, arm="A", since=NOW, until=NOW + STEP)
+    document = db_session.execute(text(
+        "select manifest from exp_run where run_id = :r"), {"r": run_id}).scalar()
+    same = storage.rebuild_manifest(document, run_id=run_id, code_sha=CODE_SHA,
+                                    schema_version=SCHEMA_VERSION, variant_cfg=VARIANT_CFG,
+                                    exec_settings=exec_settings)
+    assert same.freeze() == _checkpoint(db_session, run_id, "A").manifest_hash
+    assert storage.resume(db_session, run_id=run_id, arm_id="A", manifest=same) is not None
+    before = _checkpoint(db_session, run_id, "A")
+    for changed in (replace(exec_settings, max_open_orders=149),):
+        drifted = storage.rebuild_manifest(document, run_id=run_id, code_sha=CODE_SHA,
+                                           schema_version=SCHEMA_VERSION,
+                                           variant_cfg=VARIANT_CFG, exec_settings=changed)
+        with pytest.raises(ManifestMismatch):
+            storage.resume(db_session, run_id=run_id, arm_id="A", manifest=drifted)
+    # And a changed code sha, which is the other half of "this code, these settings".
+    drifted = storage.rebuild_manifest(document, run_id=run_id, code_sha="1" * 40,
+                                       schema_version=SCHEMA_VERSION, variant_cfg=VARIANT_CFG,
+                                       exec_settings=exec_settings)
+    with pytest.raises(ManifestMismatch):
+        storage.resume(db_session, run_id=run_id, arm_id="A", manifest=drifted)
+    assert _checkpoint(db_session, run_id, "A") == before
+
+
+def _resting_order(*, order_id: int, placed_at: datetime, prob="0.4800"):
+    """The shape `ArmRunner.adopt` reads: an `orders` row, by duck type."""
+    return SimpleNamespace(
+        id=order_id, intent_id=None, variant_id=VARIANT, ticker=FILL_TICKER,
+        venue_market_id=1, side="yes", prob=Decimal(prob), contracts=Decimal("10"),
+        filled_contracts=Decimal("0"), placed_at=placed_at,
+        expiry=placed_at + timedelta(minutes=30), queue_ahead_at_place=Decimal("0"),
+        kickoff_utc=NOW + timedelta(hours=6), game_id=1, match_key="k")
+
+
+def test_allocation_order_inside_one_instant_is_placement_order_not_insertion_order(
+        db_session, env_settings):
+    """§1.5/ruling D23/I6: the ledger divides one print in the order the caller asks, so the
+    caller's order is placement instant first and, on a tie, the order the arm issued them in
+    -- not the order the runner happens to hold them in. Adopted newest-first here, which is
+    the opposite of both. The arm's ids count down from -1, so -1 was issued before -4 and is
+    served first on the tie (fix round 2).
+    """
+    runner = _runner(db_session, env_settings, run_id=str(uuid.uuid4()), arm="A")
+    runner.adopt(_resting_order(order_id=-2, placed_at=NOW + timedelta(minutes=5)))
+    runner.adopt(_resting_order(order_id=-1, placed_at=NOW))
+    runner.adopt(_resting_order(order_id=-4, placed_at=NOW))
+    assert [view.order_id for view in runner.world.open_orders] == [-2, -1, -4]
+    # -1 and -4 share an instant and break the tie earlier-issued first; -2 is later and last.
+    assert runner._allocation_order([]) == [-1, -4, -2]
+
+
+def test_the_window_stops_at_a_chunk_boundary_when_the_executor_is_busy(db_session,
+                                                                        env_settings):
+    """C2/ruling D21: §4.3's guard is asked before **every** chunk, and the chunk that has
+    already finished keeps its checkpoint, so the next invocation resumes from it."""
+    _seed(db_session)
+    run_id = str(uuid.uuid4())
+    manifest = _manifest(run_id, exec_settings=_exec(env_settings))
+    manifest_hash = manifest.freeze()
+    writer = _writer(db_session, run_id)
+    storage.write_run(writer, manifest=manifest, manifest_hash=manifest_hash, created_at=NOW)
+    storage.write_arms(writer, [{"run_id": run_id, "arm_id": "A", "label": "baseline",
+                                 "spec": {"policy": "baseline"}, "spec_hash": "a" * 64}])
+    runner = _runner(db_session, env_settings, run_id=run_id, arm="A")
+    asked = []
+
+    def busy():
+        asked.append(datetime.now(timezone.utc))
+        return len(asked) > 1            # free for the first chunk, busy before the second
+
+    until = NOW + timedelta(hours=2)
+    result = adapter.run_window(
+        db_session, runner, _instants(db_session, since=NOW, until=until), writer=writer,
+        manifest_hash=manifest_hash, since=NOW, until=until, chunk=timedelta(hours=1),
+        busy=busy)
+    db_session.commit()
+    assert (result.stopped, len(result.chunks), len(asked)) == ("executor_busy", 1, 2)
+    assert result.chunks[0].instants > 0
+    assert runner.last_instant is not None and runner.last_instant < NOW + timedelta(hours=1)
+    stored = db_session.execute(text(
+        "select state->'last_instant'->>'__t' as last from exp_checkpoint "
+        "where run_id = :r and arm_id = 'A'"), {"r": run_id}).scalar()
+    assert datetime.fromisoformat(stored) == runner.last_instant

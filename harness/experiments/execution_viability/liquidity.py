@@ -14,9 +14,9 @@ reading this file's text.
 
 What the caller owns:
 
-* **Allocation order.** Inside one instant the caller allocates by `(placed_at, exp_order.id)`
-  (§1.5). Two orders asking in a different order would divide the same print differently, so
-  the order is part of the contract rather than an accident of dict iteration.
+* **Allocation order.** Inside one instant the caller allocates by `(placed_at, the arm's own
+  order id)` (§1.5). Two orders asking in a different order would divide the same print
+  differently, so the order is part of the contract rather than an accident of dict iteration.
 * **The decision to truncate or drop.** `allocate` returns the grant; the runner truncates or
   drops the `SimFill` accordingly.
 
@@ -99,6 +99,23 @@ class PortfolioLedger:
         """A cancel. The order's claim is forgotten; the contracts stay consumed (§1.5)."""
         self._by_order.pop((key, *_print_key(ticker, taker_side, trade_id), int(order_id)), None)
 
+    def release_order(self, key: LedgerKey, order_id: int) -> None:
+        """`release` for every print one order claimed, without naming them.
+
+        The caller that closes an order knows the order, not the prints it happened to take
+        from, so the ledger answers that question from `_by_order`. Exactly as `release`, this
+        returns **no contracts to the pool**: `_allocated` is untouched, which is what makes a
+        cancel, a re-placement and a retry all leave the consumed quantity consumed (§1.5).
+        """
+        order_id = int(order_id)
+        for okey in [k for k in self._by_order if k[0] == key and k[4] == order_id]:
+            del self._by_order[okey]
+
+    def taken_by(self, key: LedgerKey, order_id: int) -> Decimal:
+        """What one order has been granted so far. Diagnostic, never an input to a grant."""
+        return sum((value for okey, value in self._by_order.items()
+                    if okey[0] == key and okey[4] == int(order_id)), ZERO)
+
     # --- persistence (§1.4: part of the checkpoint) ------------------------------------
 
     def as_rows(self) -> list[dict]:
@@ -115,6 +132,39 @@ class PortfolioLedger:
         rows.sort(key=lambda row: (row["run_id"], row["arm_id"], row["variant_id"],
                                    row["source_trade_id"]))
         return rows
+
+    def observed_rows(self) -> list[dict]:
+        """Every print this ledger has seen, taken from or not, with its recorded size."""
+        rows = [{"ticker": ticker, "taker_side": taker_side, "source_trade_id": trade_id,
+                 "available": available}
+                for (ticker, taker_side, trade_id), available in self._available.items()]
+        rows.sort(key=lambda row: (row["ticker"], row["taker_side"], row["source_trade_id"]))
+        return rows
+
+    def as_state(self) -> dict:
+        """The **whole** ledger for `exp_checkpoint.state` (§1.4).
+
+        Both halves, because they answer different questions: `allocated` is what each
+        portfolio has taken, and `observed` is every print the run has seen -- including the
+        ones nothing has taken from yet. A checkpoint carrying only the first would forget a
+        print observed before the boundary, and an order hit by that print after the boundary
+        would be granted nothing at all (fix round 1, ruling D23/I1).
+        """
+        return {"observed": self.observed_rows(), "allocated": self.as_rows()}
+
+    def restore_state(self, state) -> None:
+        """The inverse of `as_state`, and idempotent for the same reason `restore` is.
+
+        A plain list is accepted as the `allocated` half alone, which is what `as_rows()`
+        returned before the whole ledger was carried.
+        """
+        if isinstance(state, Sequence) and not isinstance(state, (str, bytes, dict)):
+            self.restore(state)
+            return
+        for row in state.get("observed") or []:
+            self._available[_print_key(row["ticker"], row["taker_side"],
+                                       row["source_trade_id"])] = Decimal(str(row["available"]))
+        self.restore(state.get("allocated") or [])
 
     def restore(self, rows: Sequence[dict]) -> None:
         """Rebuild from `as_rows()`. Idempotent: the same rows restored twice consume once."""

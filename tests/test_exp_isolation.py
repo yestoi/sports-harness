@@ -132,9 +132,20 @@ def test_the_writer_refuses_every_production_table(db_session, exp_settings):
             "strategy_variants", "source_state", "gate_reports", "report_cells",
             "coverage_samples", "opportunity_episodes",
             "intent_episodes"} <= set(refused)
+    # Every write path, and the empty-row call on each of them: a refusal a caller could step
+    # around by passing no rows is not a refusal (fix round 1, minor 1).
+    writes = (
+        lambda table: writer.insert(table, [{"x": 1}]),
+        lambda table: writer.insert(table, []),
+        lambda table: writer.upsert(table, [{"x": 1}], key=("x",), update=("x",)),
+        lambda table: writer.upsert(table, [], key=("x",), update=("x",)),
+        lambda table: writer.upsert_returning(table, [], key=("x",), update=("x",),
+                                              returning=("x",)),
+    )
     for name in refused:
-        with pytest.raises(IsolationError, match=name):
-            writer.insert(Base.metadata.tables[name], [{"x": 1}])
+        for write in writes:
+            with pytest.raises(IsolationError, match=name):
+                write(Base.metadata.tables[name])
 
 
 def test_the_writers_metadata_holds_only_exp_tables(exp_settings):

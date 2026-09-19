@@ -1681,13 +1681,29 @@ def test_phase6d1_exec_viability_follows_orders_intent_index_and_is_the_pinned_h
 def test_the_phase6d1_revision_undoes_nothing():
     """`downgrade()` is `pass` (roadmap invariant 5, every revision since 0002) and the file
     carries no statement that takes anything away: eleven `create table if not exists`, four
-    `create index if not exists` and one `create or replace view`, and nothing else."""
+    `create index if not exists` and one `create or replace view`, and nothing else.
+
+    Read through `_executable_strings` and the `op.*` calls themselves rather than as raw file
+    text (fix round 1, minor 7): a grep over the whole file cannot tell a statement from the
+    docstring prose that explains which statements are absent, so it both misses a `DROP`
+    assembled in a constant and fails on the word \"removed\" in a sentence.
+    """
+    path = ROOT / "migrations" / "versions" / "0015_phase6d1_exec_viability.py"
     module = _load_revision("0015_phase6d1_exec_viability.py")
     assert module.downgrade() is None
-    body = (ROOT / "migrations" / "versions"
-            / "0015_phase6d1_exec_viability.py").read_text().lower()
-    for word in ("drop ", "truncate", "delete from", "alter table", "backfill "):
-        assert word not in body, f"0015_phase6d1_exec_viability contains {word!r}"
+    for statement in (" ".join(s.split()).lower() for s in _executable_strings(path)):
+        for word in ("drop ", "truncate", "delete from", "alter table", "rename"):
+            assert word not in statement, f"0015 runs {statement!r}"
+    tree = ast.parse(path.read_text())
+    calls = [node.func.attr for node in ast.walk(tree)
+             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+             and isinstance(node.func.value, ast.Name) and node.func.value.id == "op"]
+    assert sorted(set(calls)) == ["create_index", "create_table", "execute"]
+    assert (calls.count("create_table"), calls.count("create_index"),
+            calls.count("execute")) == (11, 4, 1)
+    downgrade = next(node for node in ast.walk(tree)
+                     if isinstance(node, ast.FunctionDef) and node.name == "downgrade")
+    assert all(isinstance(node, ast.Pass) for node in downgrade.body)
 
 
 def test_the_eleven_exp_tables_and_their_four_indexes_are_in_both_catalogues(two_databases):
@@ -1725,6 +1741,14 @@ def test_the_eleven_exp_tables_and_their_four_indexes_are_in_both_catalogues(two
             assert index in found, (engine.url.database, table)
             assert found[index]["column_names"] == columns
             assert not found[index]["unique"]
+        # D22: `exp_order`'s primary key is the surrogate `id`, so §2's invariant join
+        # `o.id = f.exp_order_id` names one row; the arm's own order id is unique per
+        # `(run, arm)` and is what the writer upserts on and the chunk-equality cases project
+        # through.
+        assert insp.get_pk_constraint("exp_order")["constrained_columns"] == ["id"]
+        unique = {u["name"]: u["column_names"] for u in insp.get_unique_constraints("exp_order")}
+        assert unique["uq_exp_order_arm"] == ["run_id", "arm_id", "arm_order_id"], (
+            engine.url.database, unique)
         # §1.4: the checkpoint is one row per `(run, arm)`, which is what bounds both statements
         # of §5's byte-identical case.
         assert insp.get_pk_constraint("exp_checkpoint")["constrained_columns"] == [

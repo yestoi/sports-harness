@@ -1785,18 +1785,22 @@ class ExpOrder(Base):
     """6D.1 §2. One arm's own order. No `exp_order_event` table: `placed_at`, `expiry`,
     `cancelled_at` and `cancel_reason` carry every lifecycle transition (I5).
 
-    `id` is the **arm's own** order id, which is negative by construction (`ArmWorld.
-    next_order_id`) so it can never be read as an `orders.id`; the primary key is
-    `(run_id, arm_id, id)`, which is what makes two chunkings of the same run produce the same
-    ids and two arms of one run keep their own (§1.4). `status` and `filled_contracts` are
-    beside §2's list: the whole lifecycle has to be queryable without joining the fills back
-    (§5's capacity cases read `status`), and a partial fill has to carry forward across a chunk
-    boundary.
+    `id` is a surrogate key (fix round 1, ruling D22), which is what keeps §2's invariant query
+    `join exp_order o on o.id = f.exp_order_id` unambiguous: the **arm's own** order id lives in
+    `arm_order_id`, is negative by construction (`ArmWorld.next_order_id`) so it can never be
+    read as an `orders.id`, and restarts at -1 for every `(run, arm)` -- joining on it alone
+    would match across arms and across runs. `uq_exp_order_arm (run_id, arm_id, arm_order_id)`
+    is the key the writer upserts on and the key the chunk-equality cases project through, which
+    is what makes two chunkings of one run produce the same rows (§1.4). `status` and
+    `filled_contracts` are beside §2's list: the whole lifecycle has to be queryable without
+    joining the fills back (§5's capacity cases read `status`), and a partial fill has to carry
+    forward across a chunk boundary.
     """
     __tablename__ = "exp_order"
-    run_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True)
-    arm_id: Mapped[str] = mapped_column(String(8), primary_key=True)
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), nullable=False)
+    arm_id: Mapped[str] = mapped_column(String(8), nullable=False)
+    arm_order_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     variant_id: Mapped[str] = mapped_column(String(12), nullable=False)
     intent_id: Mapped[int | None] = mapped_column(BigInteger)
     venue_market_id: Mapped[int | None] = mapped_column(Integer)
@@ -1812,7 +1816,9 @@ class ExpOrder(Base):
     cancel_reason: Mapped[str | None] = mapped_column(String(24))
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     episode_id: Mapped[int | None] = mapped_column(BigInteger)
-    __table_args__ = (Index("ix_exp_order_run_arm", "run_id", "arm_id", "placed_at"),)
+    __table_args__ = (
+        UniqueConstraint("run_id", "arm_id", "arm_order_id", name="uq_exp_order_arm"),
+        Index("ix_exp_order_run_arm", "run_id", "arm_id", "placed_at"))
 
 
 class ExpFill(Base):
@@ -1822,6 +1828,7 @@ class ExpFill(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     run_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), nullable=False)
     arm_id: Mapped[str] = mapped_column(String(8), nullable=False)
+    #: `exp_order.id`, the surrogate key (D22), so §2's invariant join reads verbatim.
     exp_order_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     filled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     contracts: Mapped[Decimal] = mapped_column(CONTRACTS, nullable=False)

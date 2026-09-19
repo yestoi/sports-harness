@@ -31,9 +31,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields as dc_fields, is_dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
@@ -137,9 +138,10 @@ class ArmRunner:
         #: §1.5: the layer above `simulate_fills`. One ledger per arm, keyed by portfolio
         #: identity inside it, so two arms in one process share no consumed quantity either.
         self.ledger = ledger if ledger is not None else PortfolioLedger()
-        #: trade_id -> (ticker, taker_side), so an allocation is keyed exactly as the print was
-        #: observed. The tape's own `taker_side`, never a side inferred from our order.
-        self._print_keys: dict[str, tuple[str, str]] = {}
+        #: trade_id -> (ticker, taker_side, ts), so an allocation is keyed exactly as the print
+        #: was observed. The tape's own `taker_side`, never a side inferred from our order. The
+        #: stamp is carried only to bound this dict (`_prune_print_keys`).
+        self._print_keys: dict[str, tuple[str, str, datetime | None]] = {}
         #: order_id -> the `exp_order` row as it stands, updated in place through the order's
         #: lifecycle (I5: no `exp_order_event` table; the row carries every transition).
         self.orders: dict[int, dict] = {}
@@ -150,6 +152,10 @@ class ArmRunner:
         #: The last instant this arm has decided, carried in the checkpoint so a resumed chunk
         #: never re-decides one (§1.4's chunk boundary).
         self.last_instant: datetime | None = None
+        #: The intents whose placement the shared pool refused at the previous instant (§1.4).
+        #: A blocked *episode* is one row; an intent that is still blocked at the next instant
+        #: is the same episode, not a new one (fix round 1, I4).
+        self.capacity_blocked: set[str] = set()
 
     # --- world ---------------------------------------------------------------------
 
@@ -228,6 +234,7 @@ class ArmRunner:
             policy=self.policy)
         records, closing = self._apply(actions, intents, markets, instant)
         filled = self._simulate(session, markets, instant, closing)
+        self._prune_print_keys(instant)
         return StepResult(instant=instant, actions=tuple(records), fills=tuple(filled),
                           open_orders=tuple(self._resting()),
                           dirty=self._dirty(markets, instant, dirty_ids))
@@ -345,8 +352,10 @@ class ArmRunner:
         self.world.sim[order_id] = fills_mod.SimState.initial(paper)
         self.world.deadlines[order_id] = action.expiry
         self._order_markets[order_id] = view.venue_market_id
+        # `id` is the database's surrogate key (D22) and is never written here: the arm's own
+        # negative id is `arm_order_id`, which is what the writer upserts on.
         self.orders[order_id] = {
-            "run_id": self.run_id, "arm_id": self.arm_id, "id": order_id,
+            "run_id": self.run_id, "arm_id": self.arm_id, "arm_order_id": order_id,
             "variant_id": intent.variant_id, "intent_id": None,
             "venue_market_id": view.venue_market_id, "ticker": view.ticker, "side": view.side,
             "prob": view.prob, "contracts": view.contracts, "filled_contracts": ZERO,
@@ -367,6 +376,8 @@ class ArmRunner:
         self.world.deadlines[order_id] = deadline
         self.world.open_orders = [row for row in self.world.open_orders
                                   if row.order_id != order_id]
+        # §1.4: the slot is released the instant the order stops resting, on cancel and on
+        # expiry alike; `open_orders` is the capacity counter and it has already shrunk above.
         record = self.orders.get(order_id)
         if record is not None:
             # The order's own row carries the transition (I5). A cancel stamps `cancelled_at`
@@ -375,8 +386,13 @@ class ArmRunner:
             if kind == "cancel":
                 record["cancelled_at"] = instant
                 record["cancel_reason"] = reason
-            # §1.4: the slot is released the instant the order stops resting, on cancel and on
-            # expiry alike; `open_orders` is the capacity counter and it has already shrunk.
+        # §1.5: the order's own claim is forgotten, and **no contract is returned to the pool**
+        # -- a cancel does not un-print a recorded trade (fix round 1, minor 2). `release_order`
+        # drops only this order's diagnostic entries; `_allocated` is untouched by construction.
+        variant = (view.variant_id if view is not None
+                   else (record or {}).get("variant_id", ""))
+        self.ledger.release_order(
+            LedgerKey(run_id=self.run_id, arm=self.arm_id, variant=variant), order_id)
         return {"kind": kind, "instant": instant,
                 "status": "cancelled" if kind == "cancel" else "expired", "order_id": order_id,
                 "reason": reason, "deadline": deadline,
@@ -394,7 +410,7 @@ class ArmRunner:
         never a bound on the data.
         """
         out: list[dict] = []
-        for order_id in [view.order_id for view in self.world.open_orders] + list(closing):
+        for order_id in self._allocation_order(closing):
             paper = self.world.paper[order_id]
             state = self.world.sim[order_id]
             deadline = self.world.deadlines.get(order_id, paper.expiry)
@@ -431,6 +447,24 @@ class ArmRunner:
             self.world.sim.pop(order_id, None)
         return out
 
+    def _allocation_order(self, closing: Sequence[int]) -> list[int]:
+        """§1.5's allocation order inside one instant: `(placed_at, arm order id)`.
+
+        Two orders asking for the same print in a different order would divide it differently,
+        so the order is fixed by the orders' own placement stamps and, for two placed at the
+        same instant, by the order the arm issued them in -- never by dict or list insertion
+        order, which a resume would not reproduce (fix round 1, ruling D23/I6). The arm's ids
+        count **down** from -1, so the tie breaks on `-arm_order_id` (equivalently on
+        `abs(arm_order_id)`): earlier-issued first, which is what §1.5's "by placement instant,
+        then the order's id" says and what ascending negative ids would invert (fix round 2).
+        """
+        ids = [view.order_id for view in self.world.open_orders] + list(closing)
+        seen: set[int] = set()
+        unique = [order_id for order_id in ids
+                  if order_id in self.world.paper and not (order_id in seen or seen.add(order_id))]
+        return sorted(unique,
+                      key=lambda order_id: (self.world.paper[order_id].placed_at, -order_id))
+
     def _market_of(self, order_id: int) -> int | None:
         view = self.world.order(order_id)
         if view is not None:
@@ -449,9 +483,26 @@ class ArmRunner:
             trade_id = getattr(row, "trade_id", None)
             if trade_id is None or str(trade_id) in self._print_keys:
                 continue
-            key = (ticker, row.taker_side or "unknown")
+            key = (ticker, row.taker_side or "unknown", getattr(row, "ts", None))
             self._print_keys[str(trade_id)] = key
             self.ledger.observe(key[0], key[1], str(trade_id), row.count)
+
+    def _prune_print_keys(self, instant: datetime) -> None:
+        """Bound the observed-print index to the simulator's own reconciliation horizon.
+
+        The bound is exact rather than arbitrary: `_simulate` reads prints from
+        `paper.placed_at - fills.RECON_HORIZON` up to the instant, so the oldest print any fill
+        of a later step can cite is `min(placed_at over the resting orders) - RECON_HORIZON`
+        (and `instant - RECON_HORIZON` when nothing rests). Anything older can never be named
+        by a future `SimFill`, and dropping it costs nothing: the ledger keeps the consumed
+        quantity, and a print read again is observed again as the same trade id (§1.5's
+        `observe` is idempotent). Without this the index would grow with every print of the
+        window and be carried in every checkpoint (fix round 1, ruling D23/I3).
+        """
+        oldest = min((paper.placed_at for paper in self.world.paper.values()), default=instant)
+        cutoff = min(oldest, instant) - fills_mod.RECON_HORIZON
+        self._print_keys = {trade_id: key for trade_id, key in self._print_keys.items()
+                            if key[2] is None or key[2] >= cutoff}
 
     def _allocate(self, order_id: int, fill) -> Decimal:
         """What this portfolio may take of `fill`, after everything it has already taken.
@@ -508,10 +559,14 @@ class ArmRunner:
         out = []
         for view in self.world.open_orders:
             state = self.world.sim[view.order_id]
+            # The **granted** total, not `SimState.filled_contracts`: that is the simulator's
+            # per-track number, which the portfolio ledger sits above and may have capped, and
+            # the resting row has to agree with the `exp_order` row (fix round 1, minor 3).
+            filled = view.filled_contracts or ZERO
             out.append({"order_id": view.order_id, "venue_market_id": view.venue_market_id,
                         "ticker": view.ticker, "side": view.side, "prob": view.prob,
-                        "contracts": view.contracts - state.filled_contracts,
-                        "filled_contracts": state.filled_contracts,
+                        "contracts": view.contracts - filled,
+                        "filled_contracts": filled,
                         "queue_ahead": state.queue_remaining, "placed_at": view.placed_at,
                         "expiry": view.expiry, "arm_id": self.arm_id, "run_id": self.run_id})
         return out
@@ -535,14 +590,11 @@ _STATE_NAMES = {cls: name for name, cls in _STATE_CLASSES.items()}
 
 def encode_state(value):
     """JSON-safe, lossless for every type the arm's world holds."""
-    import uuid as uuid_mod
-    from dataclasses import fields as dc_fields, is_dataclass
-
     if isinstance(value, Decimal):
         return {"__d": str(value)}
     if isinstance(value, datetime):
         return {"__t": value.isoformat()}
-    if isinstance(value, uuid_mod.UUID):
+    if isinstance(value, UUID):
         return {"__u": str(value)}
     if isinstance(value, (set, frozenset)):
         return {"__s": [encode_state(v) for v in sorted(value, key=repr)]}
@@ -562,8 +614,6 @@ def encode_state(value):
 
 
 def decode_state(value):
-    import uuid as uuid_mod
-
     if isinstance(value, list):
         return [decode_state(v) for v in value]
     if not isinstance(value, dict):
@@ -573,7 +623,7 @@ def decode_state(value):
     if "__t" in value:
         return datetime.fromisoformat(value["__t"])
     if "__u" in value:
-        return uuid_mod.UUID(value["__u"])
+        return UUID(value["__u"])
     if "__s" in value:
         return {decode_state(v) for v in value["__s"]}
     if "__tu" in value:
@@ -621,7 +671,10 @@ def snapshot(runner: "ArmRunner") -> dict:
         "cursor_event_id": world.cursor_event_id,
         "next_order_id": world.next_order_id,
         "orders": runner.orders,
-        "ledger": runner.ledger.as_rows(),
+        # The **whole** ledger, observed prints included: `as_rows()` alone would restore only
+        # the prints this portfolio has already taken from, so a print observed before the
+        # boundary and hit after it would grant nothing at all (fix round 1, ruling D23/I1).
+        "ledger": runner.ledger.as_state(),
         "print_keys": runner._print_keys,
         "market_ids": sorted(runner._market_ids),
         "order_markets": runner._order_markets,
@@ -629,6 +682,9 @@ def snapshot(runner: "ArmRunner") -> dict:
         # cannot see each other's capacity counter" is a statement about this number.
         "open_orders_count": len(world.open_orders),
         "last_instant": runner.last_instant,
+        # The blocked episodes still open at the boundary: a resumed chunk that finds the same
+        # intent still refused writes no second `capacity` row for it (I4).
+        "capacity_blocked": sorted(runner.capacity_blocked),
     }.items()}
 
 
@@ -647,11 +703,16 @@ def restore(runner: "ArmRunner", state: dict) -> None:
     world.cursor_event_id = state.get("cursor_event_id")
     world.next_order_id = int(decoded.get("next_order_id", -1))
     runner.orders = {int(k): v for k, v in (decoded.get("orders") or {}).items()}
-    runner.ledger.restore(decoded.get("ledger") or [])
+    runner.ledger.restore_state(decoded.get("ledger") or {})
     runner._print_keys = {str(k): tuple(v) for k, v in (decoded.get("print_keys") or {}).items()}
+    # A checkpoint written before the stamp was carried (a 2-tuple) still restores: the entry
+    # is simply unbounded until the next prune reads it.
+    runner._print_keys = {k: (v + (None,))[:3] if len(v) < 3 else v
+                          for k, v in runner._print_keys.items()}
     runner._market_ids = set(decoded.get("market_ids") or [])
     runner._order_markets = {int(k): v for k, v in (decoded.get("order_markets") or {}).items()}
     runner.last_instant = decoded.get("last_instant")
+    runner.capacity_blocked = {str(i) for i in (decoded.get("capacity_blocked") or [])}
 
 
 def run_chunk(session: Session, runner: "ArmRunner", instants: Sequence[datetime], *,
@@ -666,6 +727,10 @@ def run_chunk(session: Session, runner: "ArmRunner", instants: Sequence[datetime
     `stop_after` is the mid-slice stop (§5's kill case and §4.3's cooperative yield): the run
     stops after that many *stepped* instants with its checkpoint written, and a resume
     continues from the next one.
+
+    `mismatch_max` is §4.3's ceiling on **unexplained** mismatches (fix round 1, ruling D23/I4):
+    an explained row is a recorded, understood difference, and a run that stopped on those
+    would stop on its own capacity bookkeeping rather than on a reproduction failure.
     """
     from harness.experiments.execution_viability import baseline as baseline_mod
     from harness.experiments.execution_viability import storage as storage_mod
@@ -681,19 +746,29 @@ def run_chunk(session: Session, runner: "ArmRunner", instants: Sequence[datetime
         runner.last_instant = instant
         stepped += 1
         fills.extend(result.fills)
-        for action in result.actions:
-            if action.get("kind") == "skip" and action.get("reason") == plan_mod.EXEC_CAPACITY:
-                # §1.4: the 150-slot pool is shared inside the arm, and a blocked placement is
-                # recorded rather than silently dropped. `capacity` is §2's own mismatch kind;
-                # `exp_limitation`'s vocabulary is closed and does not carry this (ruling I5).
-                mismatches.append(baseline_mod.Mismatch(
-                    run_id=runner.run_id, arm_id=runner.arm_id, instant=instant,
-                    venue_market_id=None, kind="capacity",
-                    expected={"placed": True},
-                    actual={"placed": False, "open_orders": len(runner.world.open_orders),
-                            "max_open_orders": runner.exec_settings.max_open_orders},
-                    cause=plan_mod.EXEC_CAPACITY, explained=True))
-        if mismatch_max is not None and len(mismatches) > mismatch_max:
+        # The intent id as text: it is a UUID in `plan.Skip`, and both the mismatch row's
+        # `actual` document and the checkpoint's blocked set are JSON.
+        blocked = {str(action["intent_id"]) for action in result.actions
+                   if action.get("kind") == "skip"
+                   and action.get("reason") == plan_mod.EXEC_CAPACITY}
+        for intent_id in sorted(blocked - runner.capacity_blocked):
+            # §1.4: the 150-slot pool is shared inside the arm, and a blocked placement is
+            # recorded rather than silently dropped. `capacity` is §2's own mismatch kind;
+            # `exp_limitation`'s vocabulary is closed and does not carry this (ruling I5).
+            # One row per key per blocked **episode** -- the first instant it was refused at --
+            # rather than one per instant, which would write the same fact every 15 s for as
+            # long as the pool stayed full (fix round 1, ruling D23/I4).
+            mismatches.append(baseline_mod.Mismatch(
+                run_id=runner.run_id, arm_id=runner.arm_id, instant=instant,
+                venue_market_id=None, kind="capacity",
+                expected={"placed": True},
+                actual={"placed": False, "intent_id": intent_id,
+                        "open_orders": len(runner.world.open_orders),
+                        "max_open_orders": runner.exec_settings.max_open_orders},
+                cause=plan_mod.EXEC_CAPACITY, explained=True))
+        runner.capacity_blocked = blocked
+        unexplained = sum(1 for row in mismatches if not row.explained)
+        if mismatch_max is not None and unexplained > mismatch_max:
             stopped = "mismatch_max"
             break
         if stop_after is not None and stepped >= stop_after:
@@ -703,9 +778,12 @@ def run_chunk(session: Session, runner: "ArmRunner", instants: Sequence[datetime
     # The tape cursor of the arm's furthest-advanced track: `exp_checkpoint.cursor_event_id`.
     cursor = max((state.cursor_event_id or 0 for state in runner.world.sim.values()), default=0)
     runner.world.cursor_event_id = cursor or runner.world.cursor_event_id
-    orders = storage_mod.write_orders(writer, list(runner.orders.values()))
+    # `exp_order.id` is assigned by the database (D22), so the write comes back with the id each
+    # of this chunk's fills has to point at.
+    order_ids = storage_mod.write_orders(writer, list(runner.orders.values()))
     written = storage_mod.write_fills(writer, [
-        {"run_id": row["run_id"], "arm_id": row["arm_id"], "exp_order_id": row["order_id"],
+        {"run_id": row["run_id"], "arm_id": row["arm_id"],
+         "exp_order_id": order_ids[row["order_id"]],
          "filled_at": row["filled_at"], "contracts": row["contracts"], "prob": row["prob"],
          "fee": row["fee"], "fill_method": row["fill_method"],
          "source_trade_id": row["source_trade_id"], "through": row["through"]}
@@ -713,10 +791,64 @@ def run_chunk(session: Session, runner: "ArmRunner", instants: Sequence[datetime
     storage_mod.write_allocations(writer, runner.ledger.as_rows())
     if mismatches:
         storage_mod.write_mismatches(writer, mismatches)
+    # A closed order's row is final: it is written once more here and then leaves the runner, so
+    # neither the upsert nor the checkpoint carries the whole run's order history forward
+    # (fix round 1, ruling D23/I3). Its lifecycle is already in `exp_order`.
+    closed = [order_id for order_id, row in runner.orders.items() if row["status"] != "open"]
+    for order_id in closed:
+        runner.orders.pop(order_id, None)
+        runner._order_markets.pop(order_id, None)
     storage_mod.save_checkpoint(
         writer, run_id=runner.run_id, arm_id=runner.arm_id,
         cursor_event_id=runner.world.cursor_event_id, state=snapshot(runner),
         manifest_hash=manifest_hash)
     return ChunkResult(run_id=runner.run_id, arm_id=runner.arm_id, instants=stepped,
-                       last_instant=runner.last_instant, orders=orders, fills=written,
+                       last_instant=runner.last_instant, orders=len(order_ids), fills=written,
                        open_orders=len(runner.world.open_orders), stopped=stopped)
+
+
+@dataclass(frozen=True, slots=True)
+class WindowResult:
+    """What a whole `--since/--until` window did, chunk by chunk, and why it stopped."""
+
+    chunks: tuple[ChunkResult, ...]
+    stopped: str | None
+
+    @property
+    def stepped(self) -> int:
+        return sum(chunk.instants for chunk in self.chunks)
+
+    @property
+    def fills(self) -> int:
+        return sum(chunk.fills for chunk in self.chunks)
+
+
+def run_window(session: Session, runner: "ArmRunner", instants: Sequence[datetime], *,
+               writer, manifest_hash: str, since: datetime, until: datetime,
+               chunk: timedelta, mismatch_max: int | None = None,
+               busy=None) -> WindowResult:
+    """`run_chunk` over the window's chunks, yielding to the live executor between them.
+
+    §4.3: `busy` is asked **before every chunk** -- `capture._yield_if_executor_busy` in a run,
+    a stub in a test. When it trips, the chunk that has just finished keeps its checkpoint and
+    the window stops with `executor_busy`: the experiment never competes with the executor's
+    own loop, and the next invocation resumes from the checkpoint (fix round 1, ruling D21/C2).
+    """
+    chunks: list[ChunkResult] = []
+    stopped = None
+    start = since
+    while start < until:
+        if busy is not None and busy():
+            stopped = "executor_busy"
+            break
+        end = min(start + chunk, until)
+        window = [instant for instant in instants if start <= instant < end]
+        result = run_chunk(session, runner, window, writer=writer,
+                           manifest_hash=manifest_hash, mismatch_max=mismatch_max)
+        chunks.append(result)
+        writer.commit()
+        start = end
+        if result.stopped is not None:
+            stopped = result.stopped
+            break
+    return WindowResult(chunks=tuple(chunks), stopped=stopped)

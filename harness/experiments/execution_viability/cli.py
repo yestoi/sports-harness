@@ -349,6 +349,19 @@ def baseline_check(run_id: str = typer.Option(..., "--run-id"),
                                    limitations=[spacing]))
 
 
+#: The run's frozen manifest and its hash, on `exp_run`'s own primary key `run_id` (§4.1): one
+#: row, one index lookup, no scan. The resume point itself is read by `storage.resume`, which
+#: is the only reader of `exp_checkpoint` (§1.2's refusal happens there and nowhere else).
+_EXP_RUN_MANIFEST = text("select manifest, manifest_hash from exp_run where run_id = :r")
+
+
+def _check_resume(stored_hash: str, manifest) -> None:
+    """§1.2's refusal at the **run** level, before the arm's checkpoint is read at all."""
+    from harness.experiments.execution_viability.manifest import check_resume
+
+    check_resume(stored_hash, manifest)
+
+
 @exp_app.command("run")
 def run_cmd(run_id: str = typer.Option(..., "--run-id"),
             arm: str = typer.Option("A", "--arm"),
@@ -375,60 +388,57 @@ def run_cmd(run_id: str = typer.Option(..., "--run-id"),
     # §0.6: the label first, after the arguments are validated and before any number.
     print(EXP_LABEL)
     s = get_settings()
+    from harness.db.migrate import HEAD_REVISION
     from harness.execution.plan import ExecSettings
     from harness.execution.store import variant_configs
 
-    stored = None
+    resumed = False
     with source.reader(s) as session:
         instants, _samples, estimate = _clock(session, since=since, until=until,
                                               variant_ids=variant_ids)
-        row = session.execute(text(
-            "select manifest, manifest_hash from exp_run where run_id = :r"),
-            {"r": run_id}).first()
+        row = session.execute(_EXP_RUN_MANIFEST, {"r": run_id}).first()
         if row is None:
             raise typer.BadParameter(
                 f"no frozen exp_run row for {run_id}: `harness exp capture` and the run's "
                 f"manifest come first (§1.2)")
-        manifest_hash = row.manifest_hash
-        # The stored hash is the authority a resume is refused against; `storage.resume`
-        # re-checks it against the manifest the caller holds, before it reads the state.
-        stored = session.execute(text(
-            "select state, cursor_event_id from exp_checkpoint "
-            "where run_id = :r and arm_id = :a"), {"r": run_id, "a": arm}).first()
-        busy = capture._yield_if_executor_busy(session, s)
+        exec_settings = ExecSettings.from_settings(s)
+        variant_cfg = variant_configs(session, variant_ids)
+        # §1.2: the manifest is rebuilt for **this** code and these settings and compared with
+        # the stored hash. A changed code sha, schema head, variant configuration or execution
+        # setting raises `ManifestMismatch` out of here: the run is refused, not continued
+        # under a different definition, and the checkpoint is left byte-identical.
+        manifest = storage.rebuild_manifest(
+            row.manifest, run_id=run_id, code_sha=s.build_sha, schema_version=HEAD_REVISION,
+            variant_cfg=variant_cfg, exec_settings=exec_settings)
+        manifest_hash = manifest.freeze()
+        _check_resume(row.manifest_hash, manifest)
+        state = storage.resume(session, run_id=run_id, arm_id=arm, manifest=manifest)
+        resumed = state is not None
         runner = adapter.ArmRunner(run_id=run_id, arm_id=arm, policy=None,
-                                   variant_cfg=variant_configs(session, variant_ids),
-                                   exec_settings=ExecSettings.from_settings(s), walkers={},
+                                   variant_cfg=variant_cfg,
+                                   exec_settings=exec_settings, walkers={},
                                    tz=s.tz_local, ledger=liquidity.PortfolioLedger())
-        if stored is not None:
-            state = dict(stored.state or {})
-            state["cursor_event_id"] = stored.cursor_event_id
+        if state is not None:
             adapter.restore(runner, state)
         writer = storage.ExperimentWriter.open(s, run_id=run_id)
         try:
-            chunk = timedelta(hours=chunk_hours)
-            results = []
-            start = since
-            while start < until:
-                end = min(start + chunk, until)
-                window = [i for i in instants if start <= i < end]
-                results.append(adapter.run_chunk(
-                    session, runner, window, writer=writer, manifest_hash=manifest_hash,
-                    mismatch_max=s.exp_mismatch_max))
-                writer.commit()
-                start = end
-                if results[-1].stopped == "mismatch_max":
-                    break
+            # §4.3: the guard is asked before every chunk, not once at the start. A run that
+            # finds the executor's loop running long stops at the chunk boundary it has just
+            # checkpointed and resumes on the next invocation.
+            result = adapter.run_window(
+                session, runner, instants, writer=writer, manifest_hash=manifest_hash,
+                since=since, until=until, chunk=timedelta(hours=chunk_hours),
+                mismatch_max=s.exp_mismatch_max,
+                busy=lambda: capture._yield_if_executor_busy(session, s))
         finally:
             writer.close()
-    print(f"run={run_id} arm={arm} resumed={stored is not None} chunks={len(results)}")
+    chunks = result.chunks
+    print(f"run={run_id} arm={arm} resumed={resumed} chunks={len(chunks)}")
     print(f"  retained action instants   {len(instants)}")
     print(f"  live loop estimate         {estimate}")
-    print(f"  stepped                    {sum(r.instants for r in results)}")
-    print(f"  orders                     {results[-1].orders if results else 0}")
-    print(f"  fills                      {sum(r.fills for r in results)}")
-    print(f"  open at the end            {results[-1].open_orders if results else 0}")
-    print(f"  executor busy at start     {busy}")
-    stopped = [r.stopped for r in results if r.stopped]
-    if stopped:
-        print(f"  stopped                    {stopped[-1]}")
+    print(f"  stepped                    {result.stepped}")
+    print(f"  orders                     {chunks[-1].orders if chunks else 0}")
+    print(f"  fills                      {result.fills}")
+    print(f"  open at the end            {chunks[-1].open_orders if chunks else 0}")
+    if result.stopped:
+        print(f"  stopped                    {result.stopped}")

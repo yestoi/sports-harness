@@ -87,11 +87,15 @@ def upgrade() -> None:
     # --- §1.4: one arm's own orders, fills, print allocations and resume point ------------
     op.create_table(
         "exp_order",
+        # A surrogate key, so §2's invariant `join exp_order o on o.id = f.exp_order_id` is
+        # unambiguous (fix round 1, ruling D22).
+        sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
         sa.Column("run_id", UUID, nullable=False),
         sa.Column("arm_id", sa.String(length=8), nullable=False),
         # The arm's own (negative) order id, never a sequence: the same run chunked two ways
-        # must produce the same ids, which a serial could not promise.
-        sa.Column("id", sa.BigInteger(), autoincrement=False, nullable=False),
+        # must produce the same ids, which a serial could not promise. It restarts at -1 for
+        # every `(run, arm)`, which is why it is unique only together with both of them.
+        sa.Column("arm_order_id", sa.BigInteger(), nullable=False),
         sa.Column("variant_id", sa.String(length=12), nullable=False),
         sa.Column("intent_id", sa.BigInteger(), nullable=True),
         sa.Column("venue_market_id", sa.Integer(), nullable=True),
@@ -107,7 +111,8 @@ def upgrade() -> None:
         sa.Column("cancel_reason", sa.String(length=24), nullable=True),
         sa.Column("status", sa.String(length=16), nullable=False),
         sa.Column("episode_id", sa.BigInteger(), nullable=True),
-        sa.PrimaryKeyConstraint("run_id", "arm_id", "id"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("run_id", "arm_id", "arm_order_id", name="uq_exp_order_arm"),
         if_not_exists=True,
     )
     op.create_table(
@@ -115,6 +120,7 @@ def upgrade() -> None:
         sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
         sa.Column("run_id", UUID, nullable=False),
         sa.Column("arm_id", sa.String(length=8), nullable=False),
+        # `exp_order.id`, the surrogate key (D22).
         sa.Column("exp_order_id", sa.BigInteger(), nullable=False),
         sa.Column("filled_at", TS, nullable=False),
         sa.Column("contracts", CONTRACTS, nullable=False),

@@ -129,6 +129,26 @@ class ExperimentWriter:
         self._session.execute(sa_insert(table), list(rows))
         return len(rows)
 
+    def _conflict_statement(self, table: Table, rows: Sequence[dict], *, key: Sequence[str],
+                            update: Sequence[str]):
+        """The shared body of `upsert`/`upsert_returning`; None for an empty row list.
+
+        The guard runs **before** the empty-row shortcut (fix round 1, minor 1): an empty write
+        to a production table is still a destination the writer refuses, and a refusal that
+        depended on the row count would be a refusal a caller could step around by batching.
+        """
+        self.insert_guard(table)
+        if not rows:
+            return None
+        if len(rows) > self._batch_rows:
+            raise ValueError(
+                f"{len(rows)} rows exceeds exp_batch_rows={self._batch_rows}; batch the write "
+                f"(§4.3's bound)")
+        statement = pg_insert(table).values(list(rows))
+        return statement.on_conflict_do_update(
+            index_elements=list(key),
+            set_={name: getattr(statement.excluded, name) for name in update})
+
     def upsert(self, table: Table, rows: Sequence[dict], *, key: Sequence[str],
                update: Sequence[str]) -> int:
         """The same insert, resolved against an existing row on `key` (§4.7's role holds
@@ -140,19 +160,26 @@ class ExperimentWriter:
         consumes it (§1.5). Every refusal `insert` makes is made here first, by delegation, so
         no path around the production-table guard exists.
         """
-        if not rows:
+        statement = self._conflict_statement(table, rows, key=key, update=update)
+        if statement is None:
             return 0
-        self.insert_guard(table)
-        if len(rows) > self._batch_rows:
-            raise ValueError(
-                f"{len(rows)} rows exceeds exp_batch_rows={self._batch_rows}; batch the write "
-                f"(§4.3's bound)")
-        statement = pg_insert(table).values(list(rows))
-        statement = statement.on_conflict_do_update(
-            index_elements=list(key),
-            set_={name: getattr(statement.excluded, name) for name in update})
         self._session.execute(statement)
         return len(rows)
+
+    def upsert_returning(self, table: Table, rows: Sequence[dict], *, key: Sequence[str],
+                         update: Sequence[str], returning: Sequence[str]) -> list:
+        """`upsert`, reading back `returning` for every row it wrote or resolved.
+
+        `exp_order`'s primary key is a surrogate the database assigns (D22), so the caller that
+        has to point `exp_fill.exp_order_id` at it cannot know the value before the write; the
+        conflict clause returns the existing id on the second chunk, which is what keeps a
+        re-run's fills pointed at the same orders.
+        """
+        statement = self._conflict_statement(table, rows, key=key, update=update)
+        if statement is None:
+            return []
+        columns = [table.c[name] for name in returning]
+        return list(self._session.execute(statement.returning(*columns)))
 
     def commit(self) -> None:
         self._session.commit()
@@ -183,14 +210,20 @@ def write_arms(writer: ExperimentWriter, rows: Sequence[dict]) -> int:
     return writer.insert(writer.table("exp_arm"), list(rows))
 
 
-def write_orders(writer: ExperimentWriter, rows: Sequence[dict]) -> int:
-    """`exp_order` rows, keyed `(run_id, arm_id, id)` -- the arm's own negative order ids, so
-    the same run chunked two ways writes the same keys (§1.4)."""
-    return writer.upsert(
-        writer.table("exp_order"), list(rows), key=("run_id", "arm_id", "id"),
+def write_orders(writer: ExperimentWriter, rows: Sequence[dict]) -> dict[int, int]:
+    """`exp_order` rows, keyed `(run_id, arm_id, arm_order_id)` -- the arm's own negative order
+    ids, so the same run chunked two ways writes the same keys (§1.4).
+
+    Returns `{arm_order_id: exp_order.id}`: the primary key is the surrogate one (D22), and the
+    fills of this chunk have to point at it.
+    """
+    got = writer.upsert_returning(
+        writer.table("exp_order"), list(rows), key=("run_id", "arm_id", "arm_order_id"),
         update=("variant_id", "intent_id", "venue_market_id", "ticker", "side", "prob",
                 "contracts", "filled_contracts", "placed_at", "expiry", "queue_ahead_at_place",
-                "cancelled_at", "cancel_reason", "status", "episode_id"))
+                "cancelled_at", "cancel_reason", "status", "episode_id"),
+        returning=("id", "arm_order_id"))
+    return {row.arm_order_id: row.id for row in got}
 
 
 def write_fills(writer: ExperimentWriter, rows: Sequence[dict]) -> int:
@@ -244,6 +277,76 @@ def save_checkpoint(writer: ExperimentWriter, *, run_id: str, arm_id: str,
         "updated_at": datetime.now(timezone.utc)}],
         key=("run_id", "arm_id"), update=("cursor_event_id", "state", "manifest_hash",
                                           "updated_at"))
+
+
+#: The manifest fields this milestone re-derives at resume time, and the ones it cannot.
+#: `code_sha`, `schema_version`, `variant_configs` and `baseline_settings` describe **the code
+#: and settings about to step the tape**, so they are rebuilt here and a change in any of them
+#: is a refusal (§1.2). Everything else -- the arms and their hashes, the capture hashes and id
+#: bounds, the budgets, the cohort, the selection seed, the observation counts, the markout
+#: horizons, the missingness policy and the review deadline -- is the run's own frozen record,
+#: which T3 has no way to derive and reads back from `exp_run.manifest` unchanged.
+_MANIFEST_DERIVED = ("run_id", "code_sha", "schema_version", "variant_configs",
+                     "baseline_settings")
+_MANIFEST_TIMES = ("placement_start", "placement_end", "warmup_start", "observation_end",
+                   "extracted_at")
+_MANIFEST_TUPLES = ("arms", "arm_hashes", "exclusions", "portfolio_identity", "cohort",
+                    "markout_horizons", "run_id_bounds", "order_id_bounds", "fill_id_bounds")
+
+
+def settings_document(exec_settings) -> dict:
+    """`ExecSettings` as the manifest's `baseline_settings` (§1.2).
+
+    One serialisation, used both when a run is frozen and when a resume rebuilds it, so a
+    changed execution setting changes the hash and an unchanged one cannot.
+    """
+    import json
+    from dataclasses import fields as dc_fields
+
+    from harness.experiments.execution_viability.manifest import canonical_json
+
+    return json.loads(canonical_json(
+        {f.name: getattr(exec_settings, f.name) for f in dc_fields(exec_settings)}))
+
+
+def rebuild_manifest(document: dict, *, run_id: str, code_sha: str, schema_version: str,
+                     variant_cfg: dict, exec_settings):
+    """The manifest **this** process would freeze, from the run's stored document (§1.2).
+
+    A resume has to compare like with like: the stored hash is the authority, and the manifest
+    it is compared against must describe the code and settings that are about to step the tape,
+    not the ones that were stored beside it. The derived fields are rebuilt from the caller's
+    own code sha, schema head, variant configuration and `ExecSettings`; every other field is
+    read back from the document, because it records a decision about the run that no later
+    process can re-derive (`_MANIFEST_DERIVED`'s note lists them).
+
+    Freezing a run must use this same function for its derived fields, or the first resume
+    would refuse a run nothing had changed about.
+    """
+    import json
+    from dataclasses import fields as dc_fields
+
+    from harness.experiments.execution_viability.manifest import Manifest, canonical_json
+
+    values = dict(document or {})
+    values["run_id"] = run_id
+    values["code_sha"] = code_sha
+    values["schema_version"] = schema_version
+    values["variant_configs"] = json.loads(canonical_json(variant_cfg))
+    values["baseline_settings"] = settings_document(exec_settings)
+    kwargs = {}
+    for f in dc_fields(Manifest):
+        if f.name not in values:
+            raise IsolationError(
+                f"the stored manifest has no {f.name!r}: the run was frozen by a different "
+                f"manifest version and cannot be resumed against this one (§1.2)")
+        value = values[f.name]
+        if f.name in _MANIFEST_TIMES and isinstance(value, str):
+            value = datetime.fromisoformat(value)
+        elif f.name in _MANIFEST_TUPLES and isinstance(value, list):
+            value = tuple(value)
+        kwargs[f.name] = value
+    return Manifest(**kwargs)
 
 
 #: Two bounded reads on `exp_checkpoint`'s own primary key `(run_id, arm_id)`: the hash first,

@@ -1190,5 +1190,5 @@ def drop_schema(engine: Engine) -> None:
     tables = ", ".join(sorted(Base.metadata.tables))
     with engine.begin() as conn:
         conn.execute(text("drop view if exists positions, clv, order_episodes, veto_h9, "
-                            "exp_veto_coverage"))
+                          "exp_veto_coverage"))
         conn.execute(text(f"drop table if exists {tables} cascade"))
