@@ -1,6 +1,6 @@
 # Autopilot checkpoint
 
-Updated 2026-09-18 19:10 CT (00:10 UTC Sep 19) by controller session sports-e2 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 293. Paper-only. Runtime build: **4066197** (journal 273, app-only 07:23 CT Sep 18, fix 79 print cache; 747791c full 10:04 CT Sep 16; app-ws on 747791c). Main is ahead of the runtime by fix 85 (migration 0014, 4d2cdcc), 6D Task 11 (0fe5890) and fix 87 (8681b74): **the release is gated (journal 284)**: app-only is refused by classification while fix 85's files sit on main; fix 85 is held for Monday's quiet-window full release by ruling 2026-09-18b §1; the user chooses (packet item 24). Rollback: app-only redeploy of 1a12781.
+Updated 2026-09-18 19:42 CT (00:42 UTC Sep 19) by controller session sports-e2 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 294. Paper-only. Runtime build: **4066197** (journal 273, app-only 07:23 CT Sep 18, fix 79 print cache; 747791c full 10:04 CT Sep 16; app-ws on 747791c). Main is ahead of the runtime by fix 85 (migration 0014, 4d2cdcc), 6D Task 11 (0fe5890) and fix 87 (8681b74): **the release is gated (journal 284)**: app-only is refused by classification while fix 85's files sit on main; fix 85 is held for Monday's quiet-window full release by ruling 2026-09-18b §1; the user chooses (packet item 24). Rollback: app-only redeploy of 1a12781.
 
 ## Right now
 
@@ -17,13 +17,13 @@ Updated 2026-09-18 19:10 CT (00:10 UTC Sep 19) by controller session sports-e2 i
 ## Order of work
 
 1. Development priority: **6D.1 phase tasks** (U10): T2 in flight; T3 after T2 merges, T4 after T3, T7 after T4, T8 after T7; see Active units.
-2. Fri 2026-09-18: query 4 both halves done (17:54, 18:25 CT; Saturday brief); window read 1 done 18:31 CT (journal 293: 6B PASS, 6D row 2 FAIL stands on the unreleased row 87, coverage waived); window read 2 at 19:35 CT (fills AFTER half vs journal 269; a release-hour step-down is an alarm). Release per item 24. No open hotfix row is actionable.
+2. Fri 2026-09-18 done: query 4 both halves (Saturday brief); window reads 1 and 2 (journal 293-294: 6B PASS, 6D row 2 FAIL stands on the unreleased row 87, coverage waived, fills AFTER half shows no step-down, no alarm; page_time FAIL on two of four runs at load, ruled a point measurement, flagged to the user). Release per item 24. No open hotfix row is actionable.
 3. Verify after each release: journal 219's deferred rows, items 12/16, rows 49/68, the 6B by-cause row, Watch reads (56, 70); Task 11's and fix 87's judge-after; `exec.phase_place_ms` per `exec.placed` after fix 85.
 4. Operate: storage retention proposal `reports/2026-09-15-storage-retention-proposal.md` (the user decides by 2026-09-22); Friday alias pass done (285), next Monday 09:30 CT; 6D acceptance rows and 4.6 T18b/T19 wait for game windows; usage.py measurement is the user's (247).
 
 ## Active units
 
-- **6D.1 phase** (journal 292): branch `phase6d1-execution-viability` from main 60dd46a; ledger `.superpowers/sdd/2026-09-18-phase6d1-execution-viability/progress.md` (rulings D1-D18a, M1-M9, G1 -> T6b after T8, §0.14c facts from T6); phase head 0048237 (T2 merged 19:08 CT, suite 4,339 pristine; T2 review 7 Important fixed in one round). T3 `6d1-t3` opus on `../sports-wt/phase6d1-t3-schema-state` (DB `harness_test_phase6d1_t3_schema_state`, grant on), dispatched 19:09 CT, chase cron 20:40 CT, report `results/phase6d1-task-3-report.md`, then opus review (all DDL, additive). Next: consume T3's report, commit its diff, review-package 0048237..HEAD, full suite, merge, then T4.
+- **6D.1 phase** (journal 292): branch `phase6d1-execution-viability` from main 60dd46a; ledger `.superpowers/sdd/2026-09-18-phase6d1-execution-viability/progress.md` (rulings D1-D20, M1-M9, G1 -> T6b after T8, §0.14c facts from T6); phase head 0048237 (T2 merged 19:08 CT, suite 4,339 pristine). T3 `6d1-t3` on `../sports-wt/phase6d1-t3-schema-state` (DB `harness_test_phase6d1_t3_schema_state`, grant on): fe2b4b2 committed 19:40 CT (DONE_WITH_CONCERNS, rulings D19-D20), full suite running (pid 1416778), opus review in flight (chase 20:12 CT), report `results/phase6d1-task-3-report.md`. Next: consume the review, fix round via SendMessage to the T3 implementer if needed, merge, then T4.
 - **hotfix row 87**: done to merge (8681b74); batch closed at 2 of 12, 11:03-12:39 CT; worktree and branch removed; grant revoked.
 - **hotfix fix 85**: done to merge (4d2cdcc); worktree and branch kept until the release verification.
 - **phase 6D**: Task 11 merged (283); acceptance rows at game windows, §4 read-backs, item 12 baseline, re-archive and final review, roadmap `done`. Ledger `.superpowers/sdd/2026-09-13-phase6d-sustained-evaluation/progress.md`.
@@ -33,7 +33,7 @@ Updated 2026-09-18 19:10 CT (00:10 UTC Sep 19) by controller session sports-e2 i
 ## Pending results
 
 - Agents: 6d1-t5 implementer (opus sports-worker) running since 16:17 CT, report `.superpowers/sdd/results/phase6d1-task-5-report.md`. Suites: none running.
-- Wakeups (sports-e2, CronList): 53c666a8 19:35 CT (window read 2, fills AFTER half), e883544e 20:40 CT (T3 chase). Durable reminders 2026091803/2026091804 fired (17:55, 18:25).
+- Wakeups (sports-e2, CronList): T3 reviewer chase 20:12 CT. No timed duty before Sat 09:00 CT (row 86, the user). Durable reminders 2026091803/2026091804 fired (17:55, 18:25).
 - Receipts: fix 87 8681b74 (4,242 passed, tree 395b8a19, merged 12:39 CT, deploy gated); Task 11 0fe5890 (4,237, merged 11:03 CT, gated); fix 85 4d2cdcc (4,231 at e49a988, merged 09:21 CT, pending); fix 79 deployed 4066197 07:23 CT, verify 275 (mechanism PASS, effect FAIL). Preflight evidence/2026-09-18-preflight-1317.txt (290).
 - Fixture grant UPDATE(indisvalid) ON: harness_test_main (+ shards), phase6d_merge_main, phase6d_merge_review, phase6d1_t5_bookhealth (t1_contract revoked); older fix databases: `make testdb-prune`.
 - Worktrees: phase6d1-t5-bookhealth (T5), fix-2026-09-18-orders-intent-index (merged, kept to the release), phase6d-merge-main; Mac-era fix-45/fix-48/recovery and restart-worker-smoke preserved.
@@ -42,8 +42,8 @@ Updated 2026-09-18 19:10 CT (00:10 UTC Sep 19) by controller session sports-e2 i
 
 ## Counters and deadlines
 
-- CT day Sep 18: dispatches 32 (19 through journal 291 + 6D.1 T1, T5, T6, T2, T3, their reviews and re-reviews); units: phase 6D.1 at 13 of 80 (opened 15:31 CT, 20 h ceiling 2026-09-19 11:31 CT), plan-next 6D.1 closed at 4 of 12; failed deploys 0; implementers running 1 of 3. Sep 17 closed at 4.
-- Next duties: window read 2 at 19:35 CT (cron 53c666a8); row 86 decision Sat 09:00 CT (the user); the release per item 24; fix 85 full-release preconditions (ruling 2026-09-18b §1: no open psql transaction on harness, no controller SQL, no dump, executor loops short, no expiry cohort in flight); item 1 decide-by 2026-09-22. Games: NCAAF 18:30 CT tonight (R4: no full deploy inside the window; app-only only with an empty full-trigger diff, which fix 85 defeats), NCAAF Sat 13:00 CT.
+- CT day Sep 18: dispatches 33 (19 through journal 291 + 6D.1 T1, T5, T6, T2, T3, their reviews and re-reviews); units: phase 6D.1 at 14 of 80 (opened 15:31 CT, 20 h ceiling 2026-09-19 11:31 CT), plan-next 6D.1 closed at 4 of 12; failed deploys 0; implementers running 1 of 3. Sep 17 closed at 4.
+- Next duties: row 86 decision Sat 09:00 CT (the user); the release per item 24; fix 85 full-release preconditions (ruling 2026-09-18b §1: no open psql transaction on harness, no controller SQL, no dump, executor loops short, no expiry cohort in flight); item 1 decide-by 2026-09-22. Games: NCAAF 18:30 CT tonight (R4: no full deploy inside the window; app-only only with an empty full-trigger diff, which fix 85 defeats), NCAAF Sat 13:00 CT.
 
 ## Constraints
 
