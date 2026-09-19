@@ -1,6 +1,6 @@
 # Autopilot checkpoint
 
-Updated 2026-09-19 08:35 CT (13:35 UTC Sep 19) by controller session sports-e2 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 306. Paper-only. Runtime build: **01e7b0c** (journal 299, full release 06:37 CT Sep 19: fix 85 index 0014, 6D Task 11, fix 87, 6D.1 schema 0015). Main is 0234b1c plus journal commits (runtime 01e7b0c plus docs only: no deploy trigger). Rollback (ruling 3, journal 298): on executor/recorder down or app-serve unhealthy the user stamps alembic back to 0013 by hand, then the loop redeploys 4066197 in full; a subtle defect waits for the Sunday gap or Monday.
+Updated 2026-09-19 08:40 CT (13:40 UTC Sep 19) by controller session sports-e2 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 306. Paper-only. Runtime build: **01e7b0c** (journal 299, full release 06:37 CT Sep 19: fix 85 index 0014, 6D Task 11, fix 87, 6D.1 schema 0015). Main is 0234b1c plus journal commits (runtime 01e7b0c plus docs only: no deploy trigger). Rollback (ruling 3, journal 298): on executor/recorder down or app-serve unhealthy the user stamps alembic back to 0013 by hand, then the loop redeploys 4066197 in full; a subtle defect waits for the Sunday gap or Monday.
 
 ## Right now
 
@@ -24,7 +24,7 @@ Updated 2026-09-19 08:35 CT (13:35 UTC Sep 19) by controller session sports-e2 i
 ## Active units
 
 - **hotfix row 87**: done to merge (8681b74); batch closed at 2 of 12, 11:03-12:39 CT; worktree and branch removed; grant revoked.
-- **hotfix batch rulings (ruling 6 runbook, row 88 measurement)**: runbook committed c5a9912 (300); row 88 diagnosed (301-302, evidence/2026-09-19-row88-measurement.txt parts 1-5; report `.superpowers/sdd/results/row88-measurement-design.md` §6); row 89 Open: dispatch 4 implementer (sonnet) running since 07:38 CT in worktree fix-2026-09-19-residual-rotation (brief row89-brief.md, report row89-report.md, chase 09:08 CT); then a sonnet task review, merge to main, hold for Sunday's gap or Monday.
+- **hotfix batch rulings (ruling 6 runbook, row 88 measurement)**: runbook committed c5a9912 (300); row 88 diagnosed (301-302, evidence/2026-09-19-row88-measurement.txt parts 1-5; report `.superpowers/sdd/results/row88-measurement-design.md` §6); row 89 (own ledger `.superpowers/sdd/hotfix-2026-09-19-row89/`, clock 07:38 CT, ceiling 10:38 CT): implementer DONE_WITH_CONCERNS, branch d6f2920 (worktree fix-2026-09-19-residual-rotation); sonnet review running (08:37 CT, chase 09:07 CT); full suite running on the branch db (08:38 CT); then merge to main, hold the release for Sunday's gap or Monday.
 - **hotfix fix 85**: released 01e7b0c; worktree fix-2026-09-18-orders-intent-index and branch to remove after the judge-after.
 - **phase 6D**: Task 11 merged (283); acceptance rows at game windows, §4 read-backs, item 12 baseline, re-archive and final review, roadmap `done`. Ledger `.superpowers/sdd/2026-09-13-phase6d-sustained-evaluation/progress.md`.
 - **row 86**: argument done; Saturday.
@@ -32,17 +32,17 @@ Updated 2026-09-19 08:35 CT (13:35 UTC Sep 19) by controller session sports-e2 i
 
 ## Pending results
 
-- Agents: hotfix batch `.superpowers/sdd/hotfix-2026-09-19-rulings/` (clock 06:44 CT, wall-clock ceiling 3 h = 09:44 CT): dispatch 4 row 89 implementer running (07:38 CT, chase 09:08 CT); dispatches 1-3 done. Suites: the implementer's own `make test` on harness_test_fix_2026_09_19_residual_rotation.
+- Agents: row 89 reviewer (sonnet, 08:37 CT, chase 09:07 CT). Rulings batch closed 08:37 CT at 4 dispatches. Suites: fix 89 full suite at d6f2920 on harness_test_fix_2026_09_19_residual_rotation (started 08:38 CT, pid 2312547, log scratchpad/suite-fix89-d6f2920.log, Monitor btbpte1t0).
 - Wakeups (sports-e2, CronList): aae03f46 fired 07:41 CT (canary PASS, journal 303: loop p95 24,127 ms vs 113,137 before; fills 4 vs 0; judge-after rows all deferred); 7d72d33d Sat 09:01 CT (daily line, full verify with 2b and the walker, judge-after rows).
 - Receipts: release 01e7b0c (suite 4,533/1 at 01e7b0c match head; `/srv/sports-harness/releases/20260919T113439Z-01e7b0c`); evidence/2026-09-19-deploy-0637-{summary,release}.txt.
-- Fixture grant UPDATE(indisvalid) ON: harness_test_main (+ shards), phase6d_merge_main, phase6d_merge_review, phase6d1_t5_bookhealth (t1_contract revoked); older fix databases: `make testdb-prune`.
+- Fixture grant UPDATE(indisvalid) ON: harness_test_main (+ shards), phase6d_merge_main, phase6d_merge_review, phase6d1_t5_bookhealth, fix_2026_09_19_residual_rotation; older fix databases: `make testdb-prune`.
 - Worktrees: phase6d1-t5-bookhealth (T5), fix-2026-09-18-orders-intent-index (merged, kept to the release), phase6d-merge-main; Mac-era fix-45/fix-48/recovery and restart-worker-smoke preserved.
 - Off-host copies (journal 296): bundle sports-2026-09-19.bundle on the NAS, origin/main = a52f755.
 - Tooling: run full suites detached (`setsid nohup make test`) when free memory is under ~3 GB (memory note harness-memory-kill-2026-09-18).
 
 ## Counters and deadlines
 
-- CT day Sep 19: dispatches 13 (hotfix batch rulings: 4 of 12); Sep 18 closed at 43; units: phase 6D.1 closed at 33 of 80 (15:31 CT Sep 18 to 01:53 CT); failed deploys 0; implementers running 1 of 3 (row 89).
+- CT day Sep 19: dispatches 14 (rulings batch closed at 4; row 89 batch 2 of 12); Sep 18 closed at 43; units: phase 6D.1 closed at 33 of 80 (15:31 CT Sep 18 to 01:53 CT); failed deploys 0; implementers running 0 of 3.
 - Next duties: 09:01 CT verify and daily line; fix 87 judge-after at the first exhausted run; 6D row 4 judge-after Sun 06:37 CT; item 1 (a) is the user's this weekend, decide-by 2026-09-22 stands. Games: NCAAF Sat 10:30 CT first kickoff, 72 games; NFL Sun 12:00 CT (R4: no full deploy inside the window; app-only only with an empty full-trigger diff, which fix 85 defeats).
 
 ## Constraints
