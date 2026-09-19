@@ -612,6 +612,7 @@ actual contract count is closed by the centicent fee fix (F11), which makes the 
 - 2026-09-15 (journal 224 item 11): **storage retention decision by 2026-09-22.** Walkthrough item 14 has read under 30 days since journal 189: 121.88 of 600 GB at about 16.9 GB/day puts the ceiling near 2026-10-13. The loop's next operate duty delivers a sized proposal by table (rows, GB, growth per day, what the spec needs kept, the cost of each option) and executes nothing; retention and compaction are invariant 5, executed by the user only. **Proposal written 2026-09-15 08:06 CT (journal 230): `reports/2026-09-15-storage-retention-proposal.md`; the loop's lean is option 1 (drop the archived w37 tape partitions after an off-host copy and a partition decrypt drill); nothing executed.**
 
 The spec §2 legal-facts correction is being applied by the controller, not by the user.
+- 2026-09-19 08:26 CT (relay from sports-a0, verified read-only by the loop, journal 304): §4.7 parts A and B done 08:24 CT (`harness_exp` LOGIN, no superuser, INSERT on exactly the 11 `exp_*` tables; secret `secrets/exp_db_password` mode 600); app-research recreated 08:25 CT so the secret binds; the Weekly report row frozen by the user's edit 0234b1c. Still the user's: item 1 (a) on the Mac, §4.6 activation, §0.14a-c, M20, M13; `EXP_OBSERVER_ENABLED` stays unset.
 
 ## Carried fixes
 

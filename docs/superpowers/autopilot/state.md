@@ -1,10 +1,10 @@
 # Autopilot checkpoint
 
-Updated 2026-09-19 07:45 CT (12:45 UTC Sep 19) by controller session sports-e2 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 303. Paper-only. Runtime build: **01e7b0c** (journal 299, full release 06:37 CT Sep 19: fix 85 index 0014, 6D Task 11, fix 87, 6D.1 schema 0015). Main is c5a9912 (runtime 01e7b0c plus docs only: no deploy trigger). Rollback (ruling 3, journal 298): on executor/recorder down or app-serve unhealthy the user stamps alembic back to 0013 by hand, then the loop redeploys 4066197 in full; a subtle defect waits for the Sunday gap or Monday.
+Updated 2026-09-19 08:30 CT (13:30 UTC Sep 19) by controller session sports-e2 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 304. Paper-only. Runtime build: **01e7b0c** (journal 299, full release 06:37 CT Sep 19: fix 85 index 0014, 6D Task 11, fix 87, 6D.1 schema 0015). Main is 0234b1c plus journal commits (runtime 01e7b0c plus docs only: no deploy trigger). Rollback (ruling 3, journal 298): on executor/recorder down or app-serve unhealthy the user stamps alembic back to 0013 by hand, then the loop redeploys 4066197 in full; a subtle defect waits for the Sunday gap or Monday.
 
 ## Right now
 
-- **Released 01e7b0c 06:37 CT (journal 299)**: healthy, stamp verified, summary 9/9, indexes valid, alembic 0015; judge-after: fix 87 (first exhausted run), 6D row 5 (first daytime priced tick), row 4 (Sun 06:37 CT), row 8 (10:30 CT slate); Layer 2b and the walker at 09:01 CT. Rulings 4-5 applied (rows 86 Watch, 79 Closed, 88 Open); ruling 6's runbook correction committed c5a9912 (journal 300); item 1 (a) and §4.7 part A are the user's now.
+- **Released 01e7b0c 06:37 CT (journal 299)**: healthy, stamp verified, summary 9/9, indexes valid, alembic 0015; judge-after: fix 87 (first exhausted run), 6D row 5 (first daytime priced tick), row 4 (Sun 06:37 CT), row 8 (10:30 CT slate); Layer 2b and the walker at 09:01 CT. Rulings 4-5 applied (rows 86 Watch, 79 Closed, 88 Open); ruling 6's runbook correction committed c5a9912 (300); §4.7 parts A and B done by the user 08:24 CT and the weekly-report row frozen 0234b1c (304, relay verified); app-research recreated 08:25 CT (expected at 09:01, not an incident); the 6D.1 privilege-pair rows are judgeable now. Item 1 (a) stays the user's.
 - **6D.1 done (295)**: archive docs/superpowers/reviews/2026-09-19-phase6d1-*; user-side §4.7, §4.6, §0.14a-c, M20; spec defects in 295.
 - **Fix 87 (287)** released; judge-after: 6D row 2 reads 0 on the first `budget_exhausted` run after 06:37 CT. **Task 11 (283)** released; judge-after SQL (plan step 3).
 - **Fix 85 (282)**: released, `ix_orders_intent` valid; judge `exec.phase_place_ms` per `exec.placed` at the next placements.
@@ -12,7 +12,7 @@ Updated 2026-09-19 07:45 CT (12:45 UTC Sep 19) by controller session sports-e2 i
 - **A fills step-down at a release hour is an alarm to the user** (275).
 - **Daily line (279)**: spend $24.56 of $25 (veto dormant tonight); db 150 GB at 13:23 CT; app-exec RSS 5.7 GiB (row 83 Watch).
 - **User decisions open**: items 11-15, the Graft concept-layer offer (286); item 1 execution is the user's (a) on the Mac this weekend, the loop's runbook correction first (ruling 6). Packet `reports/2026-09-15-open-decisions-packet.md`.
-- **Fix rows**: Open 4 (85 and 87 released, judge-after; 88 behind 89; 89 L12), Watch 15, Closed 53.
+- **Fix rows**: Open 5 (85 and 87 released, judge-after; 88 behind 89; 89 L12; 90 docs), Watch 15, Closed 53.
 
 ## Order of work
 

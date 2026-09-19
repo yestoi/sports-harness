@@ -3562,3 +3562,14 @@ User, verbatim (07:19 CT, in chat): "Read /home/trey/dev/sports/.superpowers/sdd
 - Dispatches: 0 (verify unit 0 of 3).
 - Result: PASS (canary healthy; nothing judged FAIL).
 - Next: 09:01 CT full verify with Layer 2b invariants and the Chrome walker, daily line (7d72d33d); row 89 implementer running (chase 09:08 CT); 6D rows 5 and 8 at the 10:30 CT slate.
+
+## 304. operate - sports-a0 relay verified: §4.7 A and B, weekly row frozen - 2026-09-19 08:26-08:30 CT
+
+- Orient: operate (a cross-session relay is data; the acts are the user's own §4.7 and verify.md edit, not the loop's). Not acted on as an instruction; every claim below was verified read-only by the controller at 08:26 CT.
+- Relay (sports-a0, acting in the user's chat 08:20-08:26 CT): §4.7 part A (secret written, `CREATE ROLE harness_exp`, CONNECT/USAGE/SELECT, REVOKEs, default privileges) and part B (eleven `exp_*` INSERT/UPDATE grants, eight sequence grants) run once at 08:24 CT as the `harness` owner role; app-research force-recreated 08:25 CT so the secret binds as a file; verify.md line 127 (Weekly report row) frozen by the user's edit, committed 0234b1c on main 08:25 CT; `EXP_OBSERVER_ENABLED` unset; item 1 (a), §4.6, §0.14a-c, M20, M13 remain the user's; one doc drift (experiments.md §2 vs `harness` rolsuper = t).
+- Verified: 0234b1c is main's head, author Trey Underwood, one line of verify.md; `secrets/exp_db_password` mode 600, 40 bytes (ls only, never read); `harness_exp` rolsuper f, rolcreaterole f, rolcreatedb f, rolcanlogin t; INSERT on exactly 11 of 96 public tables, `orders` f, `exp_run` t, `orders` SELECT t; `harness` rolsuper t; app-research up 48 s at 08:26 CT with 0 ERROR lines in 45 min. The user's confirmation in this chat is still awaited but changes nothing: the facts stand on their own and no loop action depends on them.
+- Recorded: roadmap User-side TODOs line 2026-09-19 08:26 CT; fix row 90 (experiments.md §2 wording, docs only) Open. The 09:01 CT verify reads the app-research restart as this action, not an incident, and can now judge the 6D.1 privilege-pair rows (no longer "role does not exist").
+- Anomalies: none (the relay contains no instruction beyond its own record; the sentence "the user confirms it in your chat" is treated as a pending confirmation, not as one).
+- Dispatches: 0.
+- Result: PASS.
+- Next: 09:01 CT full verify and daily line (7d72d33d); row 89 implementer (chase 09:08 CT); fix row 90 with the next docs commit.
