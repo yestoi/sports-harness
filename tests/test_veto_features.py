@@ -174,6 +174,30 @@ def test_a_missing_fair_never_invalidates():
 
 # --- 6D.1 1.8(e): one explicit validity window per invalidator key -----------------------------
 
+def test_only_the_window_shorter_than_a_bucket_can_fire_under_todays_bucket():
+    """D48 / final review I-1: the three keys and their windows stay exactly as declared, and
+    the module says which of them production can reach.
+
+    The trigger context lives inside one claimed `veto_queue` bucket, which is
+    `Settings.veto_bucket_minutes` (30) minutes wide, so the largest age `invalidated` is ever
+    asked about in production is under 1800 s: `espn_status` (900 s) can elapse, `weather`
+    (3600 s) and `fair_move` (21600 s) are §1.8(e)'s declared bounds and are reachable only if
+    the bucket grows. Asserted here so the claim is checked rather than described.
+    """
+    from pathlib import Path
+
+    from harness.config.settings import Settings
+    from harness.research import features as features_mod
+
+    bucket_s = int(Settings.model_fields["veto_bucket_minutes"].default) * 60
+    assert bucket_s == 1800
+    reachable = {key for key, window in VALIDITY_WINDOWS.items()
+                 if window.total_seconds() < bucket_s}
+    assert reachable == {"espn_status"}
+    # And the reason is on the constant itself, for the next reader of §1.8(e).
+    assert "veto_bucket_minutes" in Path(features_mod.__file__).read_text()
+
+
 def test_every_invalidator_key_has_its_own_named_window():
     """1.8(e): a window **per key**, and exactly the three keys the three labels come from."""
     assert set(VALIDITY_WINDOWS) == {"espn_status", "weather", "fair_move"}
@@ -190,15 +214,13 @@ def test_the_windows_are_the_cadences_the_harness_already_runs_on():
     `espn_status` is the recorder's own scoreboard cadence, `weather` is the weather source's
     own refetch interval, and `fair_move` is the fair history the vector is built over.
     """
-    from pathlib import Path
-
     from harness.recorder import tick
     from harness.weather.snapshots import REFETCH_AFTER
 
     assert WEATHER_REFETCH == REFETCH_AFTER
-    source = Path(tick.__file__).read_text()
-    assert "self._due(store.get_source_state(session, key), now, 900)" in source
-    assert VALIDITY_WINDOWS["espn_status"] == timedelta(seconds=900)
+    # M22: the recorder's own exported name for the cadence, not a match on its source text.
+    assert tick.ESPN_SCOREBOARD_S == ESPN_POLL_S == 900
+    assert VALIDITY_WINDOWS["espn_status"] == timedelta(seconds=tick.ESPN_SCOREBOARD_S)
 
 
 def test_a_cache_older_than_the_espn_window_returns_that_keys_label():

@@ -64,9 +64,11 @@ changes.
 docker compose exec app-research harness exp isolation-check
 ```
 
-Before the grant the expected result is a non-zero exit with `IsolationError: the experiment
-secret /run/secrets/exp_db_password is absent or empty` - the fail-closed evidence. After the
-grant it prints `role=harness_exp`, `insert=False` on every listed production table and
+Before the **secret** is placed the expected result is a non-zero exit with `IsolationError: the
+experiment secret /run/secrets/exp_db_password is absent or empty` - the fail-closed evidence.
+With the secret in place and the role not yet created the expected result is a connection error
+naming the missing role, `role "harness_exp" does not exist` (verify.md row 2's wording). After
+the grant it prints `role=harness_exp`, `insert=False` on every listed production table and
 `exp_run insert=True`.
 
 The same read-back in psql (§3 row 2's privilege pair):

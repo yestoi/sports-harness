@@ -8,7 +8,7 @@ from pathlib import Path
 
 from datetime import datetime, timezone
 
-from sqlalchemy import MetaData, Table, insert as sa_insert, text
+from sqlalchemy import MetaData, Table, insert as sa_insert, text, update as sa_update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import Session
@@ -47,8 +47,13 @@ def production_tables() -> frozenset[str]:
     return frozenset(n for n in Base.metadata.tables if not n.startswith(EXP_TABLE_PREFIX))
 
 
-def check_destination(s: Settings, *, url: str) -> str:
-    """§1.1(e): refuse a destination whose dbname is not the configured one."""
+def check_destination(s: Settings, *, url: str) -> str | None:
+    """§1.1(e): refuse a destination whose dbname is not the configured one.
+
+    Returns the accepted dbname, which is `None` for a URL that names no database at all (M2):
+    `make_url(...).database` is `str | None`, and the two `None`s can only be equal to each
+    other, so an unnamed destination is accepted only against an unnamed configured one.
+    """
     want = make_url(s.database_url).database
     got = make_url(url).database
     if got != want:
@@ -74,7 +79,24 @@ def write_body(s: Settings, run_id: str, name: str, body: bytes) -> tuple[str, s
 
 
 class ExperimentWriter:
-    """The only writer of `exp_*` rows. Its destination cannot name a production table."""
+    """The only writer of `exp_*` rows. Its destination cannot name a production table.
+
+    **The interface** (M1: `commit` and the three below are beyond T1's declared four, and are
+    documented here rather than left for a reader to find at a call site):
+
+    * `open` / `close` - the §1.1(b) role, secret and destination refusals, and the rollback
+      that ends the session.
+    * `table(name)` - the writer's **own** `Table` object, the only one the guards accept.
+    * `insert` / `upsert` / `upsert_returning` - the writes, each bounded by `exp_batch_rows`.
+    * `commit()` - T3 onward commits per chunk, T5 per `--persist` run and T7 per metered call,
+      so the unit of durability is the caller's; the writer does not commit on its own.
+    * `rollback()` - discard this writer's uncommitted work **without** closing it, so a caller
+      whose step raised can still record what happened on the same writer (M17).
+    * `update(table, key=..., values=...)` - rewrite one row in place on its natural key, for
+      the rows a later observation supersedes (M21). §4.7's role holds INSERT and UPDATE on the
+      `exp_*` tables and **no DELETE**, which is why superseding is an update and never a
+      delete-and-reinsert.
+    """
 
     def __init__(self, session: Session, *, run_id: str, batch_rows: int):
         self._session = session
@@ -181,8 +203,42 @@ class ExperimentWriter:
         columns = [table.c[name] for name in returning]
         return list(self._session.execute(statement.returning(*columns)))
 
+    def update(self, table: Table, *, key: dict, values: dict) -> int:
+        """Rewrite the rows matching `key` in place, and return how many were rewritten.
+
+        §4.7's `harness_exp` role holds `INSERT` and `UPDATE` on the eleven `exp_*` tables and
+        **no `DELETE`** (docs/runbooks/experiments.md §2's grant), so a row a later observation
+        supersedes is updated on its natural key rather than deleted and written again -- a
+        `DELETE` path would fail closed in production and needs a grant that is the user's
+        (M21). `exp_outcome` has no unique constraint to upsert on and this milestone adds no
+        DDL, which is why the key is passed as a `where` rather than as `on conflict`.
+
+        An empty `key` is refused: an unkeyed update would rewrite the whole table, which is
+        never what a caller means, and `insert_guard`'s two refusals run first either way.
+        """
+        self.insert_guard(table)
+        if not key:
+            raise ValueError("update() needs the row's natural key; an unkeyed update would "
+                             "rewrite every row of the table (§1.1c)")
+        statement = sa_update(table)
+        for name, value in key.items():
+            statement = statement.where(table.c[name] == value)
+        return self._session.execute(statement.values(**values)).rowcount
+
     def commit(self) -> None:
         self._session.commit()
+
+    def rollback(self) -> None:
+        """Discard this writer's uncommitted work and keep the session usable (M17).
+
+        `close()` rolls back *and* closes, which is the end of the writer's life; a caller whose
+        step raised part way through still has a row to record about the failure -- the
+        observer's `_record_read_failure` is the case this exists for -- and needs the session
+        clean rather than gone. A failed statement leaves PostgreSQL's transaction in the
+        aborted state where every later statement raises `InFailedSqlTransaction`, so the
+        rollback is what makes "best effort" actually an effort.
+        """
+        self._session.rollback()
 
     def close(self) -> None:
         self._session.rollback()

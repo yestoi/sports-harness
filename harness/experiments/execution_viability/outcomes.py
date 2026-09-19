@@ -134,17 +134,13 @@ def _table_row(row: dict) -> dict:
                                       "missing_reason")}
 
 
-def record_outcomes(session: Session, writer, *, run_id: str, arm_id: str,
-                    orders: Sequence[dict], now: datetime,
-                    horizons: Sequence[str] = HORIZONS) -> list[dict]:
-    """One `exp_outcome` row per `(order, horizon)`, written through the writer only.
+def _build_rows(session: Session, *, run_id: str, arm_id: str, orders: Sequence[dict],
+                now: datetime, horizons: Sequence[str]) -> list[dict]:
+    """The `(order, horizon)` rows themselves, computed once and written by the caller.
 
-    `orders` are the arm's own filled orders as `exp_order` rows (`id` the surrogate key the
-    fills point at, D22). An order that never filled has no outcome at all -- there is no
-    entry price to measure from -- and is skipped rather than recorded as missing.
-
-    This function **reads** production tables (`venue_quotes`, `venue_markets`) and writes
-    `exp_outcome`: nothing else, in either direction.
+    Shared by `record_outcomes` and `rerecord_outcomes` so that a row written for the first
+    time and the same row written again when its horizon matured are computed by one function
+    and can never drift apart.
     """
     rows: list[dict] = []
     closes: dict = {}
@@ -157,7 +153,80 @@ def record_outcomes(session: Session, writer, *, run_id: str, arm_id: str,
         for horizon in horizons:
             rows.append(_row(session, order, horizon, run_id=run_id, arm_id=arm_id, now=now,
                              close_at=closes[market_id]))
+    return rows
+
+
+def matured_horizons(session: Session, order: dict, *, now: datetime,
+                     horizons: Sequence[str] = HORIZONS) -> set[str]:
+    """Which of `horizons` have actually arrived for this order at `now` (M21).
+
+    The same `_matures_at` the rows are built with, asked as a question: a `close` horizon on a
+    market the tape kept no close for has no instant at all and never matures, and a horizon
+    later than `now` has not arrived. A resumed run uses this to tell a censored row that is
+    still "not yet" from one that is now measurable.
+    """
+    if order.get("filled_at") is None:
+        return set()
+    close_at = _close_at(session, order.get("venue_market_id"))
+    out = set()
+    for horizon in horizons:
+        matures_at = _matures_at(horizon, filled_at=order["filled_at"], close_at=close_at)
+        if matures_at is not None and matures_at <= now:
+            out.add(horizon)
+    return out
+
+
+def record_outcomes(session: Session, writer, *, run_id: str, arm_id: str,
+                    orders: Sequence[dict], now: datetime,
+                    horizons: Sequence[str] = HORIZONS) -> list[dict]:
+    """One `exp_outcome` row per `(order, horizon)`, written through the writer only.
+
+    `orders` are the arm's own filled orders as `exp_order` rows (`id` the surrogate key the
+    fills point at, D22). An order that never filled has no outcome at all -- there is no
+    entry price to measure from -- and is skipped rather than recorded as missing.
+
+    This function **reads** production tables (`venue_quotes`, `venue_markets`) and writes
+    `exp_outcome`: nothing else, in either direction.
+    """
+    rows = _build_rows(session, run_id=run_id, arm_id=arm_id, orders=orders, now=now,
+                       horizons=horizons)
     if rows:
         writer.insert(writer.table("exp_outcome"), [_table_row(row) for row in rows])
     log.info("exp outcomes run=%s arm=%s rows=%d", run_id, arm_id, len(rows))
+    return rows
+
+
+#: The natural key of one `exp_outcome` row (§2 declares no unique constraint over it, and this
+#: milestone adds no DDL): the run, the arm, the order and the horizon identify exactly one row
+#: because that is the pair `_RECORDED_OUTCOMES` deduplicates on when the rows are first written.
+OUTCOME_KEY = ("run_id", "arm_id", "exp_order_id", "horizon")
+
+
+def rerecord_outcomes(session: Session, writer, *, run_id: str, arm_id: str,
+                      orders: Sequence[dict], now: datetime,
+                      horizons: Sequence[str] = HORIZONS) -> list[dict]:
+    """Recompute rows that already exist and **update them in place** (M21, D44's residual).
+
+    G2's idempotency is skip-not-update: a `(exp_order_id, horizon)` pair that is already in
+    `exp_outcome` is not written again. That is right for a matured row, whose value cannot
+    change, and wrong for a **censored** one: its horizon arrives later, and on the resumed run
+    that could measure it the pair was simply skipped, so the row stayed censored for good.
+
+    The row is rewritten on its natural key rather than deleted and re-inserted: §4.7's role
+    holds INSERT and UPDATE on the `exp_*` tables and no DELETE (`ExperimentWriter.update`).
+    `observed_at` moves to this invocation's instant, which is the point -- the row now records
+    when it was actually observed.
+
+    One statement per row, so the caller decides which rows are worth re-observing;
+    `cli._record_run_outcomes` asks only for censored pairs whose horizon has since arrived.
+    """
+    rows = _build_rows(session, run_id=run_id, arm_id=arm_id, orders=orders, now=now,
+                       horizons=horizons)
+    table = writer.table("exp_outcome")
+    for row in rows:
+        values = _table_row(row)
+        writer.update(table, key={name: values[name] for name in OUTCOME_KEY},
+                      values={name: value for name, value in values.items()
+                              if name not in OUTCOME_KEY})
+    log.info("exp outcomes re-recorded run=%s arm=%s rows=%d", run_id, arm_id, len(rows))
     return rows

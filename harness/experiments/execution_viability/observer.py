@@ -431,6 +431,25 @@ def _fair_p(lines: dict, game: CohortGame, market: CohortMarket, *, now: datetim
     `fair.stale_allowance_s("featured", ttk, s)` is the derivation §1.6(e) names: a quote
     older than the featured cadence plus this deployment's tick budget is not priced, so a
     book that stopped updating cannot carry an observation forward.
+
+    **This is not production's freshness rule, and the difference is deliberate** (M16,
+    task-7 review Minor 5). Three ways, stated here rather than aligned, because aligning would
+    mean either calling a pricing entry point -- which I12 forbids -- or changing
+    `harness/pricing/`, which this milestone does not touch:
+
+    * production **prices anyway** and labels the result: its fair-value row carries
+      `staleness_s` and `stale_allowance_s`, and `not_stale` takes the *looser* of the
+      allowance and `Settings.stale_s`. Arm C instead **drops** the over-age line before the
+      pair is formed, so no over-age observation exists to be labelled.
+    * the age here is measured from `now` -- the observation instant -- against
+      `line.last_update`, while production measures from pricing time against the newest sharp
+      `last_update` of the group.
+    * a line whose `last_update` is `None` is kept here whatever its age: the source gave no
+      book stamp, and dropping it would silently thin the cohort.
+
+    The consequence for the comparison: arm C's fair values are drawn from a strictly fresher
+    subset than A's and B's, so a C-vs-A/B difference carries this selection with it and any
+    reading of §1.6's cohort has to say so.
     """
     if not lines:
         return None
@@ -590,13 +609,19 @@ def _observe_sport(session: Session, now: datetime, s: Settings, client: OddsApi
 
 
 def _record_read_failure(writer, *, run: ObserverRun, sport: str, now: datetime) -> None:
-    """Record a call that raised, on its own transaction, best effort.
+    """Record a call that raised, on its own transaction (M17).
 
-    The failure happens before any row of this sport is inserted (the fetch and the body write
-    both precede the insert), so the session is clean here. If it is not, the refusal to record
-    is logged and the caller's `close()` rolls the remains back.
+    The failure usually happens before any row of this sport is inserted -- the fetch and the
+    body write both precede the insert -- but it does not have to: a raise *after* a partial
+    insert, or a raise out of the database itself, leaves this writer's transaction holding
+    rows that were never committed and, in the second case, aborted so that every later
+    statement would fail too. `rollback()` is therefore the first thing this does: it discards
+    exactly that, keeps the session usable, and is what makes the failure row best *effort*
+    rather than best hope. It can never discard a completed call's rows -- those were committed
+    by `_observe_sport` before it returned (fix round 1, Important 2).
     """
     try:
+        writer.rollback()
         writer.insert(writer.table("exp_observation"),
                       _flat_rows(run, sport, now=now, status=READ_FAILED))
         writer.commit()

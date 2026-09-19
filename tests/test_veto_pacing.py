@@ -374,7 +374,7 @@ def test_the_command_prints_the_profile_and_the_question_and_activates_nothing()
 
 # --- 1.8(e): the cache's validity window in the sweep ------------------------------------------
 
-def _expired_cache_bucket(session):
+def _expired_cache_bucket(session, *, sport="nfl"):
     """Two signals of one bucket, twenty minutes apart, with identical features.
 
     Twenty minutes is past `VALIDITY_WINDOWS["espn_status"]` (900 s) and inside the other two,
@@ -383,7 +383,7 @@ def _expired_cache_bucket(session):
     only thing that separates the second signal from the trigger's cached context is its age.
     """
     bucket = NOW - timedelta(minutes=30)
-    game, market = seed_game(session, kickoff=NOW + timedelta(hours=3),
+    game, market = seed_game(session, kickoff=NOW + timedelta(hours=3), sport=sport,
                              score_status="scheduled", score_ts=bucket - timedelta(hours=1))
     signals = [seed_signal(session, market=market, created_at=bucket),
                seed_signal(session, market=market, created_at=bucket + timedelta(minutes=20))]
@@ -401,10 +401,16 @@ def _decisions(session):
 
 
 def test_an_expired_cache_forces_a_call_and_records_the_window_it_left(db_session, env_settings):
-    """1.8(e): new material information bypasses the cached context, and so does a context
-    that has simply run out: the second signal gets its own call, not the trigger's answer."""
+    """1.8(e) **under a loaded profile** (D47): new material information bypasses the cached
+    context, and so does a context that has simply run out: the second signal gets its own
+    call, not the trigger's answer.
+
+    The profile is named because the expiry path ships dormant with the rest of §1.8; the
+    dormancy case below asserts the other half.
+    """
     from tests.test_veto_worker import FakeClient
 
+    object.__setattr__(env_settings, "veto_pacing_profile", "near_kickoff_50")
     ids = _expired_cache_bucket(db_session)
     client = FakeClient()
     counts = veto.veto_pass(db_session, NOW, env_settings, client=client)
@@ -431,6 +437,7 @@ def test_the_same_sweep_under_an_exhausted_cap_writes_the_caps_reason_code(db_se
     from harness.research.client import PRIMARY_MODEL, SHADOW_MODEL
     from tests.test_veto_worker import FakeClient
 
+    object.__setattr__(env_settings, "veto_pacing_profile", "near_kickoff_50")
     ids = _expired_cache_bucket(db_session)
     pair = sum((worst_case_usd(model, env_settings.veto_max_searches)
                 for model in (PRIMARY_MODEL, SHADOW_MODEL)), Decimal("0"))
@@ -444,3 +451,78 @@ def test_the_same_sweep_under_an_exhausted_cap_writes_the_caps_reason_code(db_se
     assert rows[1].reason_code == "daily"                # the cap's code, not "espn_status"
     assert rows[1].feature_delta == {} and rows[1].call_id is None
     assert len(client.calls) == 2                        # one pair, not two
+
+
+def test_the_expiry_path_is_dormant_while_no_profile_is_named(db_session, env_settings):
+    """D47: with `veto_pacing_profile` at its default `None` the elapsed-window half of 1.8(e)
+    is not on the live path at all.
+
+    The same fixture as the case above -- a cache twenty minutes old, past
+    `VALIDITY_WINDOWS["espn_status"]`, with every invalidator key identical -- and the second
+    signal still inherits the trigger's decision from cache: `from_cache = True`, no second
+    call, no `{"expired": ...}` delta, and `reserve_spend` asked exactly once. The decided
+    population therefore does not move at this release; §1.8 activates as one thing.
+    """
+    from harness.research import spend as spend_mod
+    from tests.test_veto_worker import FakeClient
+
+    assert env_settings.veto_pacing_profile is None
+    reservations = []
+    real_reserve = spend_mod.reserve_spend
+
+    def counting(session, now, settings, kind, models, searches=None, **kwargs):
+        reservations.append(kind)
+        return real_reserve(session, now, settings, kind, models, searches, **kwargs)
+
+    veto.reserve_spend = counting
+    try:
+        ids = _expired_cache_bucket(db_session)
+        client = FakeClient()
+        counts = veto.veto_pass(db_session, NOW, env_settings, client=client)
+    finally:
+        veto.reserve_spend = real_reserve
+    assert counts["calls"] == 1 and counts["decided"] == 2
+    rows = _decisions(db_session)
+    assert [row.signal_id for row in rows] == ids
+    assert [row.from_cache for row in rows] == [False, True]
+    # The cached row carries its ordinary feature delta (the clock moved twenty minutes), and
+    # nothing about an expiry: no `{"expired": ...}` key can be written on this path.
+    assert "expired" not in rows[1].feature_delta and "window_s" not in rows[1].feature_delta
+    assert rows[1].reason_code is None
+    assert rows[1].call_id == rows[0].call_id     # the trigger's own answer, inherited
+    assert len(client.calls) == 2                 # one pair, not two
+    assert reservations == ["veto"]               # one reservation, for the trigger
+
+
+def test_the_pacing_reservation_is_asked_about_the_items_own_sport(db_session, env_settings):
+    """M7: `near_kickoff` is asked for the queue item's sport, not for every window at once.
+
+    Both sports are seeded because `near_kickoff_50` declares a window for each: the call site
+    has to name `nfl` for an nfl item and `ncaaf` for an ncaaf one. Under this profile both
+    windows are 6 h, so the boolean is the same either way -- the assertion is on what the
+    reservation was *asked*, which is what stops a profile with two different windows from
+    judging a game against the other sport's.
+    """
+    from tests.test_veto_worker import FakeClient
+
+    object.__setattr__(env_settings, "veto_pacing_profile", "near_kickoff_50")
+    asked = []
+    real_near = pacing.near_kickoff
+
+    def spy(profile, now, kickoff, *, sport=None):
+        asked.append(sport)
+        return real_near(profile, now, kickoff, sport=sport)
+
+    for sport in ("nfl", "ncaaf"):
+        db_session.rollback()
+        db_session.execute(text("delete from veto_decisions"))
+        db_session.execute(text("delete from veto_queue"))
+        db_session.commit()
+        _expired_cache_bucket(db_session, sport=sport)
+        veto.pacing.near_kickoff = spy
+        try:
+            counts = veto.veto_pass(db_session, NOW, env_settings, client=FakeClient())
+        finally:
+            veto.pacing.near_kickoff = real_near
+        assert counts["calls"] >= 1
+    assert asked == ["nfl", "nfl", "ncaaf", "ncaaf"]   # one per paired call, both sports

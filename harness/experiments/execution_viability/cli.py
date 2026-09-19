@@ -1,8 +1,12 @@
 """`harness exp …` (§1.1). Every subcommand of this milestone lands here with its implementation."""
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
+
+import hashlib
 
 import typer
 from sqlalchemy import text
@@ -33,6 +37,11 @@ _PRIVILEGE_READBACK = text(
 def isolation_check() -> None:
     """Print the privilege read-back of §3 row 2. Reads nothing else and writes nothing."""
     configure_logging()
+    # §0.6 (ruling D50): the label first, like every other `harness exp` command. This command
+    # takes no argument to validate, so "after argument validation" is immediately; it used to
+    # print the label last, which left the first line of the one command an operator runs
+    # before the grant saying nothing about whose numbers these are.
+    print(EXP_LABEL)
     s = get_settings()
     with source.reader(s) as session:
         role = session.execute(text("select current_user")).scalar()
@@ -44,7 +53,6 @@ def isolation_check() -> None:
     for name, may in rows:
         print(f"  {name:<16} insert={may}")
     print(f"  exp_run          insert={exp_insert}")
-    print(EXP_LABEL)
 
 
 #: One aggregate per interval over `orderbook_events`, bounded by `ticker = :t and ts >= :start
@@ -156,13 +164,20 @@ def book_health(ticker: str = typer.Option(..., "--ticker"),
     seed = int(since.timestamp())
     with source.reader(s) as session:
         observations = _observe_intervals(session, ticker, since, until, interval_s)
-        rows = [bookhealth.classify(obs) for obs in observations]
         verified = {obs.interval_start
                     for obs in bookhealth.sample_intervals(observations, seed=seed)}
-        for row in rows:
-            if row.interval_start in verified:
-                row.evidence["snapshot_at_interval_end"] = bookhealth.verify_snapshot(
-                    session, ticker, row.interval_end)
+        # M5: `HealthRow` is `frozen=True`, so the verified snapshot is folded into the
+        # evidence **before** the row is constructed rather than written into the dict a frozen
+        # row already holds. The sample frame is resolved first for the same reason.
+        rows = []
+        for obs in observations:
+            row = bookhealth.classify(obs)
+            if obs.interval_start in verified:
+                row = replace(row, evidence={
+                    **row.evidence,
+                    "snapshot_at_interval_end": bookhealth.verify_snapshot(
+                        session, ticker, row.interval_end)})
+            rows.append(row)
     counts = bookhealth.summarize(rows)
     print(f"ticker={ticker} intervals={len(rows)} verified={len(verified)} "
           f"interval_s={interval_s} seed={seed}")
@@ -418,18 +433,30 @@ def _check_resume(stored_hash: str, manifest) -> None:
 #: `prob`, which is what T4's schedule defines the outcome against. An order that never filled
 #: carries a null and `record_outcomes` skips it rather than recording a missing outcome for it.
 #: `ix_exp_order_run_arm (run_id, arm_id, placed_at)` bounds the scan to this run's arm.
+#: M-b: the entry instants are a **grouped** left join, not a correlated subquery. The
+#: correlated form re-walked the arm's whole fill range once per order -- `ix_exp_fill_trade`
+#: leads on `(run_id, arm_id, source_trade_id)`, so `exp_order_id` is not an access path -- and
+#: a three-day run would do that ~41,000 times under the source session's 25 s
+#: `statement_timeout`. The aggregate below reads the arm's fills once, bounded by the same
+#: `run_id`/`arm_id` the outer query is, and produces the identical result set: `min` over the
+#: same rows, `null` for an order with no fill.
 _ARM_ORDERS = text(
-    "select o.id, o.venue_market_id, o.side, o.prob, "
-    "(select min(f.filled_at) from exp_fill f where f.run_id = o.run_id "
-    " and f.arm_id = o.arm_id and f.exp_order_id = o.id) as filled_at "
-    "from exp_order o where o.run_id = :r and o.arm_id = :a order by o.id")
+    "select o.id, o.venue_market_id, o.side, o.prob, f.filled_at "
+    "from exp_order o "
+    "left join (select exp_order_id, min(filled_at) as filled_at from exp_fill "
+    "           where run_id = :r and arm_id = :a group by exp_order_id) f "
+    "  on f.exp_order_id = o.id "
+    "where o.run_id = :r and o.arm_id = :a order by o.id")
 
-#: What this run's arm has already recorded. `exp_outcome` has no unique key to upsert on (2:
-#: its only constraint is the surrogate primary key) and this task adds no DDL, so idempotence
-#: across a resumed run is a read of the pairs already present: a `(exp_order_id, horizon)` that
-#: is there is not written again, and every write still goes through T1's writer alone.
+#: What this run's arm has already recorded, **and whether it was censored**. `exp_outcome` has
+#: no unique key to upsert on (2: its only constraint is the surrogate primary key) and this
+#: task adds no DDL, so idempotence across a resumed run is a read of the pairs already
+#: present: a `(exp_order_id, horizon)` that is there is not written again, and every write
+#: still goes through T1's writer alone. `censored` is read with them for M21: a censored row
+#: is the one kind whose value can still change, when its horizon finally arrives.
 _RECORDED_OUTCOMES = text(
-    "select exp_order_id, horizon from exp_outcome where run_id = :r and arm_id = :a")
+    "select exp_order_id, horizon, censored from exp_outcome "
+    "where run_id = :r and arm_id = :a")
 
 
 def _record_run_outcomes(session, writer, *, run_id: str, arm_id: str, orders: list[dict],
@@ -440,14 +467,33 @@ def _record_run_outcomes(session, writer, *, run_id: str, arm_id: str, orders: l
     `outcomes.HORIZONS` -- and each group is written in slices no wider than the writer's own
     `exp_batch_rows` bound (4.3), so one `record_outcomes` call can never exceed it. The rows
     returned are the ones **this** invocation recorded, which is what the summary line counts.
+
+    **A censored row is re-observed when its horizon arrives** (M21, D44's residual). Skipping
+    every pair that exists made a censored row permanent: the 30-minute markout of an order
+    filled ten minutes before the window's end was recorded "not yet" and never revisited, even
+    on the resumed run whose `until` was hours later. Such a pair is recomputed and **updated
+    in place** on its natural key -- §4.7's role has UPDATE and no DELETE -- and only when
+    `outcomes.matured_horizons` says the instant has actually arrived, so a horizon that is
+    still in the future is left alone and a `close` horizon the tape kept no close for is never
+    touched at all. The extra read is one `venue_markets` lookup per order that carries a
+    censored row, and none on a run's first invocation, where nothing is recorded yet.
     """
-    recorded = {(row.exp_order_id, row.horizon) for row in
-                session.execute(_RECORDED_OUTCOMES, {"r": run_id, "a": arm_id})}
+    recorded: dict[tuple, bool] = {
+        (row.exp_order_id, row.horizon): bool(row.censored) for row in
+        session.execute(_RECORDED_OUTCOMES, {"r": run_id, "a": arm_id})}
     groups: dict[tuple, list[dict]] = {}
+    regroups: dict[tuple, list[dict]] = {}
     for order in orders:
         missing = tuple(h for h in outcomes.HORIZONS if (order["id"], h) not in recorded)
         if missing:
             groups.setdefault(missing, []).append(order)
+        censored = tuple(h for h in outcomes.HORIZONS
+                         if recorded.get((order["id"], h)) is True)
+        if censored:
+            matured = outcomes.matured_horizons(session, order, now=until, horizons=censored)
+            if matured:
+                key = tuple(h for h in censored if h in matured)
+                regroups.setdefault(key, []).append(order)
     rows: list[dict] = []
     for horizons, group in groups.items():
         size = max(1, batch_rows // len(horizons))
@@ -455,6 +501,9 @@ def _record_run_outcomes(session, writer, *, run_id: str, arm_id: str, orders: l
             rows += outcomes.record_outcomes(session, writer, run_id=run_id, arm_id=arm_id,
                                              orders=group[start:start + size], now=until,
                                              horizons=horizons)
+    for horizons, group in regroups.items():
+        rows += outcomes.rerecord_outcomes(session, writer, run_id=run_id, arm_id=arm_id,
+                                           orders=group, now=until, horizons=horizons)
     return rows
 
 
@@ -559,7 +608,11 @@ def run_cmd(run_id: str = typer.Option(..., "--run-id"),
     print(f"  retained action instants   {len(instants)}")
     print(f"  live loop estimate         {estimate}")
     print(f"  stepped                    {result.stepped}")
-    print(f"  orders                     {chunks[-1].orders if chunks else 0}")
+    # M-a: the **run's** orders, counted from `exp_order` itself. `chunks[-1].orders` is the
+    # last chunk's write -- closed orders leave `runner.orders` at every chunk boundary by
+    # design (D23/I3) -- so a twelve-chunk window printed the handful the last chunk still had
+    # open. `arm_orders` is this run and arm's whole order set, which is what the line claims.
+    print(f"  orders                     {len(arm_orders)}")
     print(f"  fills                      {result.fills}")
     print(f"  open at the end            {chunks[-1].open_orders if chunks else 0}")
     if result.stopped:
@@ -635,6 +688,93 @@ _REPORT_ALLOCATION = text(
     "from exp_allocation where run_id = :r")
 
 
+#: The `capture_hash_mismatch` rows this run already carries, by stream (M19). One row per
+#: stream is enough: a tampered file is a property of the run, not of how often it is reported,
+#: and `exp_limitation` has no unique key to resolve a second write against.
+_REPORT_CAPTURE_LIMITATIONS = text(
+    "select scope from exp_limitation where run_id = :r and kind = 'capture_hash_mismatch'")
+
+#: How much of a capture file is hashed at a time. The tree is NDJSON in the hundreds of MB, so
+#: it is read in blocks rather than into memory.
+_HASH_BLOCK = 1 << 20
+
+
+def _file_sha256(path: Path) -> str | None:
+    """The file's sha256, or None where there is no file to hash."""
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(_HASH_BLOCK), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _capture_hash_rows(s, *, run_id: str, manifest: dict, recorded: set[str],
+                       now: datetime) -> tuple[list, int]:
+    """§2's file-tree invariant, evaluated (M19, D41): re-hash the run's capture files against
+    the manifest's own `capture_hashes` and return the limitation rows for the streams that no
+    longer match, with the number of streams checked.
+
+    The manifest records `{stream: {"sha256": ..., "sql": ..., "params": ...}}` -- the digest
+    **and** the statement that produced it -- so a mismatch is attributable to a readable query
+    rather than to a bare number (`capture.capture_manifest_entries`). A stream whose file is
+    absent is a mismatch too, and says so: a missing file is not a passing hash.
+
+    Nothing is written here; the caller opens the writer only if there is a row to write, so an
+    intact tree leaves `exp report` the read-only command it has always been.
+    """
+    entries = (manifest or {}).get("capture_hashes") or {}
+    # `storage.run_dir` would *create* the tree; a report reads it. The path is the same one
+    # `capture_slice` wrote to, and a run whose directory is gone reports every stream missing
+    # rather than making an empty directory that then looks like a capture.
+    directory = Path(s.exp_dir) / run_id
+    rows = []
+    for stream in sorted(entries):
+        entry = entries[stream]
+        expected = entry.get("sha256") if isinstance(entry, dict) else entry
+        path = directory / f"{stream}.ndjson"
+        actual = _file_sha256(path)
+        if actual is not None and actual == expected:
+            continue
+        if stream in recorded:
+            continue
+        rows.append(capture.Limitation(
+            run_id=run_id, kind="capture_hash_mismatch",
+            scope={"stream": stream, "path": str(path)},
+            detail=(f"{stream}: the manifest froze sha256 {expected}; the file now hashes to "
+                    f"{actual if actual is not None else 'nothing - it is absent'}. The rows "
+                    f"read from this stream are not the rows the run was frozen over (§2)."),
+            created_at=now))
+    return rows, len(entries)
+
+
+def _verify_capture_tree(s, session, *, run_id: str, manifest: dict) -> None:
+    """Re-hash the run's capture tree, print the result and persist any mismatch (M19).
+
+    The limitation rows go through `ExperimentWriter` like every other `exp_*` write, and the
+    writer is opened **only** when there is one to write: a report on an intact tree needs no
+    §4.7 write capability, and one on a tampered tree fails closed without it rather than
+    printing a clean line.
+    """
+    recorded = {(row.scope or {}).get("stream")
+                for row in session.execute(_REPORT_CAPTURE_LIMITATIONS, {"r": run_id})}
+    rows, streams = _capture_hash_rows(s, run_id=run_id, manifest=manifest, recorded=recorded,
+                                       now=datetime.now(timezone.utc))
+    print(f"capture files re-hashed: {streams} streams, {len(rows)} mismatch"
+          f"{'' if len(rows) == 1 else 'es'} (§2)")
+    for row in rows:
+        print(f"  capture_hash_mismatch   {row.scope['stream']}")
+    if not rows:
+        return
+    writer = storage.ExperimentWriter.open(s, run_id=run_id)
+    try:
+        storage.write_limitations(writer, rows)
+        writer.commit()
+    finally:
+        writer.close()
+
+
 def _game_of(row):
     """The cluster a markout belongs to: its game, or the market itself when the tape kept no
     game for it (§1.9c's clustering is by game, and an unknown game is not every other one)."""
@@ -661,6 +801,11 @@ def _weighted(rows, key) -> str | None:
 def report_cmd(run_id: str = typer.Option(..., "--run-id")) -> None:
     """Render one run's arm results under §1.9's reporting contract.
 
+    Before any arm number the run's **capture files are re-hashed** against the manifest's own
+    `capture_hashes` (M19): a stream that no longer hashes to what was frozen, or whose file is
+    gone, is printed and written as a `capture_hash_mismatch` limitation row through the
+    writer. §2 states that invariant and nothing evaluated it until now.
+
     Every row this command prints is **exploratory**: it is an arm's counterfactual behaviour,
     not a registered variant's performance, so the registered table is printed empty rather
     than filled with numbers from a different measurement (§0.10, §1.9e). The episode rule,
@@ -686,6 +831,9 @@ def report_cmd(run_id: str = typer.Option(..., "--run-id")) -> None:
         share = session.execute(_REPORT_GAME_SHARE, {"r": run_id}).first()
         totals = session.execute(_REPORT_CONTRACTS, {"r": run_id}).first()
         allocation = session.execute(_REPORT_ALLOCATION, {"r": run_id}).first()
+        # §2's file-tree invariant, before any arm number: the rows below were read from a
+        # capture whose files must still hash to what the manifest froze (M19, D41).
+        _verify_capture_tree(s, session, run_id=run_id, manifest=run.manifest)
     buckets: dict[tuple, list] = {}
     for row in per_order:
         buckets.setdefault((row.arm_id, row.portfolio), []).append(row)

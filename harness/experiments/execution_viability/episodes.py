@@ -42,7 +42,17 @@ def gap_rule_s(cadence_in_force: int) -> int:
 
 @dataclass(frozen=True, slots=True)
 class Episode:
-    """One opportunity episode, with the rule it was counted under stored beside it."""
+    """One opportunity episode, with the rule it was counted under stored beside it.
+
+    **It carries no identity, deliberately** (M14, task-4 review Minor 6). An episode belongs to
+    a `(run, arm, variant, venue_market_id, side)` key -- that key is what `episodes_for` is
+    called *per*, and every caller already holds it -- so repeating it on each returned object
+    would be a second copy that could disagree with the caller's. No consumer persists an
+    `Episode`: this milestone's only readers are `report.render`'s rule lines and this module's
+    tests, and §2 declares no `exp_episode` table. If one is ever persisted it needs the key
+    columns and an ordinal; until then `started_at` is the ordering key inside one key's list,
+    and `episodes_for` returns them in that order.
+    """
 
     started_at: datetime
     ended_at: datetime

@@ -29,8 +29,16 @@ def service_connect_args() -> dict:
     return {"application_name": service} if service else {}
 
 
-def make_engine(url: str, statement_timeout_ms: int = 30000) -> Engine:
+def make_engine(url: str, statement_timeout_ms: int = 30000, *,
+                session_gucs: dict[str, str] | None = None) -> Engine:
     """The one engine factory, with the per-engine statement timeout and the service's name.
+
+    `session_gucs` is additive and empty by default, so every existing caller builds exactly the
+    engine it built before. A caller that names settings here gets them in libpq's `options`
+    startup string, which means **every** connection this pool ever opens carries them - a
+    connection replaced after a failed `pool_pre_ping`, or one returned to the pool and reset,
+    included. A session-level `SET` cannot promise that: it belongs to the connection it ran on
+    (6D.1 carry-forward M4).
 
     Fix 71 narrowing (journal 224 item 9a): each compose app service sets
     `HARNESS_SERVICE=<service name>`, which libpq sends as `application_name`, so the server
@@ -41,8 +49,10 @@ def make_engine(url: str, statement_timeout_ms: int = 30000) -> Engine:
     Unset -- the test suite, a developer shell, any process outside the stack -- sends no
     `application_name` at all and keeps libpq's default, so nothing outside compose changes.
     """
+    options = [f"-c statement_timeout={statement_timeout_ms}"]
+    options += [f"-c {name}={value}" for name, value in sorted((session_gucs or {}).items())]
     connect_args = {"connect_timeout": 5,
-                    "options": f"-c statement_timeout={statement_timeout_ms}",
+                    "options": " ".join(options),
                     **service_connect_args()}
     return create_engine(url, pool_pre_ping=True, future=True, connect_args=connect_args)
 

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 import typer
+from sqlalchemy import text
 from typer.testing import CliRunner
 
 from harness.cli import app
@@ -294,8 +295,10 @@ def test_the_summary_line_names_the_counts(db_session, env_settings, monkeypatch
     assert out.splitlines()[0] == cli.EXP_LABEL
     line = [ln for ln in out.splitlines() if "outcomes recorded" in ln]
     assert line == ["  outcomes recorded          3 (censored 1, missing 0)"]
-    # Nothing else in the summary moved.
-    assert "  orders                     0" in out and "  fills                      0" in out
+    # Nothing else in the summary moved -- except that the orders line is now the run's own
+    # count (M-a): this fixture has exactly one `exp_order` row and no chunk at all, where the
+    # line used to read `chunks[-1].orders` and print 0 for a run that placed an order.
+    assert "  orders                     1" in out and "  fills                      0" in out
 
 
 def test_the_report_of_that_run_no_longer_says_the_sensitivities_are_absent(db_session,
@@ -315,3 +318,230 @@ def test_the_report_of_that_run_no_longer_says_the_sensitivities_are_absent(db_s
     assert header.index("order-weighted") < header.index("game-weighted")
     assert "market-side-weighted" in header
     assert "0.030000" in out                     # the two sensitivities, on the one filled order
+
+
+# --- M-a: the summary's "orders" line is the run's, not the last chunk's -----------------------
+
+def test_the_orders_line_counts_the_runs_orders_not_the_last_chunks(db_session, env_settings,
+                                                                    monkeypatch, capsys):
+    """M-a: closed orders leave `runner.orders` at every chunk boundary (D23/I3), so
+    `chunks[-1].orders` is one chunk's write and not the window's.
+
+    Two chunks here, each reporting one order, over a run whose arm has two `exp_order` rows:
+    the line must say 2 -- the run's own order count, which is what a reader takes it for --
+    and not the 1 the last chunk wrote.
+    """
+    first = _seed_filled_order(db_session)
+    second = _second_order(db_session)
+    assert first != second
+    _run_cmd_seams(monkeypatch, db_session, env_settings)
+    chunks = (SimpleNamespace(orders=1, open_orders=1, instants=1, fills=0, stopped=None),
+              SimpleNamespace(orders=1, open_orders=0, instants=1, fills=0, stopped=None))
+    monkeypatch.setattr(cli.adapter, "run_window",
+                        lambda *a, **k: SimpleNamespace(chunks=chunks, stepped=2, fills=0,
+                                                        stopped=None))
+    _run()
+    out = capsys.readouterr().out
+    assert db_session.execute(text(
+        "select count(*) from exp_order where run_id = :r and arm_id = 'A'"),
+        {"r": OUT_RUN}).scalar() == 2
+    assert "  orders                     2" in out
+    assert "chunks=2" in out
+    # The open-order line is still the last chunk's, which is what "at the end" means.
+    assert "  open at the end            0" in out
+
+
+def _second_order(session, *, arm="A"):
+    """A second order of the same run and arm, unfilled: it belongs to the run's count and has
+    no outcome (`record_outcomes` skips an order that never filled)."""
+    from harness.db.models import ExpOrder, VenueMarket
+
+    market = VenueMarket(venue="kalshi", ticker="KXNFLGAME-OUT2", event_ticker="EV",
+                         series_ticker="KXNFLGAME", market_type="moneyline",
+                         match_status="matched", first_seen_raw_id=2, last_seen_at=FILLED,
+                         match_confidence=Decimal("1.00"), match_reason="seed")
+    session.add(market)
+    session.flush()
+    order = ExpOrder(run_id=OUT_RUN, arm_id=arm, arm_order_id=-2, variant_id="v1",
+                     venue_market_id=market.id, ticker="KXNFLGAME-OUT2", side="yes",
+                     prob=Decimal("0.4800"), contracts=Decimal("10"),
+                     filled_contracts=Decimal("0"), placed_at=FILLED - timedelta(minutes=5),
+                     status="open")
+    session.add(order)
+    session.flush()
+    session.commit()
+    return order.id
+
+
+# --- M21: a censored horizon is re-observed once it matures -----------------------------------
+
+def test_a_censored_horizon_is_re_recorded_when_it_matures(db_session, env_settings,
+                                                           monkeypatch):
+    """M21 (D44's residual): G2's skip-not-update left a censored row censored for ever.
+
+    The first invocation ends one minute after the fill, so the 30-minute horizon has not
+    arrived and is recorded `censored` with no value. The second ends two hours later, when the
+    tape does carry the mid: the same row -- same `(run, arm, order, horizon)`, no duplicate --
+    now carries the hand-computed +0.03 markout, `censored = false` and the later
+    `observed_at`. The `close` horizon has no close stamp on this market, so it stays censored
+    and is never touched.
+    """
+    order_id = _seed_filled_order(db_session)
+    _run_cmd_seams(monkeypatch, db_session, env_settings)
+    early = FILLED + timedelta(minutes=1)
+    cli.run_cmd(run_id=OUT_RUN, arm="A", since=FILLED - timedelta(hours=1), until=early,
+                variants="v1", chunk_hours=1.0)
+    rows = {row.horizon: row for row in _outcome_rows(db_session)}
+    assert rows["1800"].censored is True and rows["1800"].value is None
+    assert rows["1800"].observed_at == early
+    # The window now reaches past the horizon: the same row is re-observed, not duplicated.
+    _run()
+    after = _outcome_rows(db_session)
+    assert len(after) == 3                                   # still one row per horizon
+    rows = {row.horizon: row for row in after}
+    assert rows["1800"].censored is False
+    assert rows["1800"].value == Decimal("0.030000")         # 0.5100 - 0.4800, hand-computed
+    assert rows["1800"].observed_at == UNTIL                 # when it was actually observed
+    assert rows["t0"].value == Decimal("0.000000")           # matured at the first invocation
+    assert rows["close"].censored is True                    # no close stamp: never matures
+    assert {row.exp_order_id for row in after} == {order_id}
+
+
+def test_a_censored_horizon_that_has_not_matured_is_left_alone(db_session, env_settings,
+                                                               monkeypatch):
+    """The other half of M21: re-observation is not re-writing. A second invocation whose
+    window still ends before the horizon leaves the censored row byte for byte as it was."""
+    _seed_filled_order(db_session)
+    _run_cmd_seams(monkeypatch, db_session, env_settings)
+    early = FILLED + timedelta(minutes=1)
+    for _ in range(2):
+        cli.run_cmd(run_id=OUT_RUN, arm="A", since=FILLED - timedelta(hours=1), until=early,
+                    variants="v1", chunk_hours=1.0)
+    rows = _outcome_rows(db_session)
+    assert len(rows) == 3
+    censored = {row.horizon: row for row in rows if row.censored}
+    assert set(censored) == {"1800", "close"}
+    assert [row.observed_at for row in rows] == [early] * 3
+
+
+# --- M19: `exp report` re-hashes the capture tree ----------------------------------------------
+
+def _captured_run(session, tmp_path, env_settings):
+    """A frozen run whose manifest names one capture stream, with the file on disk."""
+    from harness.db.models import ExpRun
+
+    object.__setattr__(env_settings, "exp_dir", tmp_path / "exp")
+    directory = tmp_path / "exp" / OUT_RUN
+    directory.mkdir(parents=True)
+    body = b'{"id": 1}\n'
+    (directory / "orders.ndjson").write_bytes(body)
+    import hashlib
+
+    digest = hashlib.sha256(body).hexdigest()
+    session.add(ExpRun(run_id=OUT_RUN, created_at=FILLED, manifest_hash=OUT_HASH,
+                       manifest={"capture_hashes": {"orders": {
+                           "sha256": digest,
+                           "sql": "select id from orders where ...",
+                           "params": {"start": "2026-09-16T12:00:00+00:00"}}}},
+                       code_sha="a" * 40, clock_mode="retained_action_instants",
+                       status="frozen"))
+    session.commit()
+    return directory
+
+
+def test_report_re_hashes_the_capture_files_and_says_they_match(db_session, env_settings,
+                                                                monkeypatch, capsys, tmp_path):
+    """M19: §2's file-tree invariant, evaluated. An intact tree writes nothing and opens no
+    writer -- `exp report` stays the read-only command it has always been."""
+    _captured_run(db_session, tmp_path, env_settings)
+    _run_cmd_seams(monkeypatch, db_session, env_settings)
+    monkeypatch.setattr(cli.storage.ExperimentWriter, "open",
+                        lambda *a, **k: pytest.fail("an intact tree opens no writer"))
+    cli.report_cmd(run_id=OUT_RUN)
+    out = capsys.readouterr().out
+    assert out.splitlines()[0] == cli.EXP_LABEL          # §0.6: the label first, still
+    assert "capture files re-hashed: 1 streams, 0 mismatches" in out
+    assert _limitations(db_session) == []
+
+
+def test_report_writes_capture_hash_mismatch_for_a_tampered_file(db_session, env_settings,
+                                                                 monkeypatch, capsys, tmp_path):
+    """M19: one tampered file, one `capture_hash_mismatch` row through the writer.
+
+    The row names the stream and the path, and the detail carries both digests, so a reader of
+    `exp_limitation` can tell which stream stopped being the one the run was frozen over.
+    """
+    directory = _captured_run(db_session, tmp_path, env_settings)
+    (directory / "orders.ndjson").write_bytes(b'{"id": 2}\n')      # one byte of the tape moved
+    _run_cmd_seams(monkeypatch, db_session, env_settings)
+    cli.report_cmd(run_id=OUT_RUN)
+    out = capsys.readouterr().out
+    assert out.splitlines()[0] == cli.EXP_LABEL
+    assert "capture files re-hashed: 1 streams, 1 mismatch" in out
+    assert "  capture_hash_mismatch   orders" in out
+    rows = _limitations(db_session)
+    assert [row.kind for row in rows] == ["capture_hash_mismatch"]
+    assert rows[0].scope["stream"] == "orders"
+    assert rows[0].scope["path"].endswith(f"{OUT_RUN}/orders.ndjson")
+    assert "the manifest froze sha256" in rows[0].detail
+    # The invariant is a property of the run, not of how often it is reported: a second report
+    # prints it again and writes no second row.
+    cli.report_cmd(run_id=OUT_RUN)
+    assert len(_limitations(db_session)) == 1
+
+
+def test_report_reports_an_absent_capture_file_as_a_mismatch(db_session, env_settings,
+                                                             monkeypatch, capsys, tmp_path):
+    """A missing file is not a passing hash (M19)."""
+    directory = _captured_run(db_session, tmp_path, env_settings)
+    (directory / "orders.ndjson").unlink()
+    _run_cmd_seams(monkeypatch, db_session, env_settings)
+    cli.report_cmd(run_id=OUT_RUN)
+    out = capsys.readouterr().out
+    assert "capture files re-hashed: 1 streams, 1 mismatch" in out
+    assert "it is absent" in _limitations(db_session)[0].detail
+
+
+def _limitations(session):
+    return session.execute(text(
+        "select kind, scope, detail from exp_limitation where run_id = :r order by created_at"),
+        {"r": OUT_RUN}).all()
+
+
+# --- M3: `exp isolation-check`'s printed read-back ----------------------------------------------
+
+def test_isolation_check_prints_one_read_back_line_per_privilege_it_names(db_session,
+                                                                          env_settings,
+                                                                          monkeypatch, capsys):
+    """M3 (task-1 review Minor 3): the §3 row 2 read-back had no automated test at all.
+
+    The role probed is this test database's own -- `harness_exp` does not exist here, and
+    `has_table_privilege` raises on a role that does not -- so what is asserted is the shape of
+    the read-back: `EXP_LABEL` as the **first** line (§0.6, ruling D50), then the eight
+    production tables §3 row 2 names, each on its own line and each with the server's own
+    answer, then the `exp_run` line.
+    """
+    from contextlib import contextmanager
+
+    role = db_session.execute(text("select current_user")).scalar()
+    monkeypatch.setattr(cli, "EXP_DB_ROLE", role)
+    monkeypatch.setattr(cli, "get_settings", lambda: env_settings)
+
+    @contextmanager
+    def reader(_s):
+        yield db_session
+
+    monkeypatch.setattr(cli.source, "reader", reader)
+    cli.isolation_check()
+    lines = capsys.readouterr().out.splitlines()
+    # §0.6 / D50: the label is the first line, before any number, as in the other eight commands.
+    assert lines[0] == cli.EXP_LABEL
+    assert lines[1].startswith(f"role={role} exp_tables=")
+    names = [line.split()[0] for line in lines[2:]]
+    assert names == ["orders", "fills", "intents", "signals", "ledger", "source_state",
+                     "research_spend", "veto_decisions", "exp_run"]
+    # The test role owns the schema, so the server answers True here; the point of the read-back
+    # is that the answer comes from `has_table_privilege` rather than from the code's belief.
+    assert all(line.endswith("insert=True") for line in lines[2:])
+    assert lines[-1].startswith("  exp_run")
+

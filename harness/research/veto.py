@@ -105,6 +105,12 @@ class QueuedSignal:
     #: while `veto_pacing_profile` is `None` - `pacing.near_kickoff(None, ...)` is `False` - and
     #: `None` for a queue row with no game.
     kickoff_utc: datetime | None = None
+    #: The game's sport, from the same additive left join (M7). `pacing.near_kickoff` takes it
+    #: so the item is judged against **its own** sport's window instead of against every window
+    #: in the profile; `None` for a queue row with no game, which is the all-windows reading the
+    #: preflight already documents. Inert under `near_kickoff_50`, whose two windows are both
+    #: 6 h, and not inert for any profile that ever gives nfl and ncaaf different ones.
+    sport: str | None = None
 
 
 def bucket_start(created_at: datetime, minutes: int) -> datetime:
@@ -181,11 +187,12 @@ _CLAIM = text(f"""
 """)
 
 #: The `games` join is additive (a left join on the primary key, one row per queue row) and
-#: carries `kickoff_utc` so the reservation can tell a near-kickoff signal from a far one. It
-#: changes no row, no order and no existing column.
+#: carries `kickoff_utc` so the reservation can tell a near-kickoff signal from a far one, and
+#: `sport` so it is judged against that sport's own window (M7). It changes no row, no order
+#: and no existing column.
 _SIGNALS = text("""
     select s.id, s.venue_market_id, s.side, s.fair_p, s.edge, s.created_at,
-           q.game_id, q.market_type, q.bucket_start, g.kickoff_utc
+           q.game_id, q.market_type, q.bucket_start, g.kickoff_utc, g.sport
     from veto_queue q join signals s on s.id = q.signal_id
     left join games g on g.id = q.game_id
     where q.signal_id = any(:signal_ids)
@@ -229,7 +236,7 @@ def claim_bucket(session: Session, now: datetime, *, profile=None) -> list[Queue
     return [QueuedSignal(signal_id=r.id, game_id=r.game_id, market_type=r.market_type,
                          bucket_start=r.bucket_start, created_at=r.created_at,
                          venue_market_id=r.venue_market_id, side=r.side, fair_p=r.fair_p,
-                         edge=r.edge, id=r.id, kickoff_utc=r.kickoff_utc)
+                         edge=r.edge, id=r.id, kickoff_utc=r.kickoff_utc, sport=r.sport)
             for r in rows]
 
 
@@ -347,12 +354,18 @@ def _call_pair(session: Session, client, settings, queued: QueuedSignal, numeric
 
     `profile` is 6D.1 §1.8's pacing profile, `None` by default: `pacing.near_kickoff(None, ...)`
     is `False` and `reserved_floor(None, ...)` is zero, so the reservation is today's exactly.
+
+    The item's own `sport` is passed with its kickoff (M7): `near_kickoff` then answers for the
+    windows of *that* sport rather than for every window the profile declares. Under today's
+    only profile both windows are 6 h, so the answer is the same either way; under a profile
+    that gives one sport a longer window it is not, and the queue row already carries the sport.
     """
     models = [PRIMARY_MODEL, SHADOW_MODEL]
     reservation = reserve_spend(session, now, settings, "veto", models,
                                 searches=settings.veto_max_searches,
                                 near_kickoff=pacing.near_kickoff(profile, now,
-                                                                 queued.kickoff_utc))
+                                                                 queued.kickoff_utc,
+                                                                 sport=queued.sport))
     # The advisory lock lives until this transaction ends, so it is ended immediately: holding it
     # across a 10-30 s Anthropic call would block every other reservation on the ISO week.
     session.commit()
@@ -421,7 +434,11 @@ def veto_pass(session: Session, now: datetime, settings, client=None) -> dict:
     new material information bypasses the cached context and forces a call within the
     reservation. The trigger's answer is inherited only while `invalidated` finds neither a
     moved key nor an elapsed `features.VALIDITY_WINDOWS` entry between the trigger's own frozen
-    as-of and this signal's. An expiry is recorded exactly like any other invalidator -- its
+    as-of and this signal's. **The elapsed-window half is dormant until a pacing profile is
+    named** (ruling D47): with `Settings.veto_pacing_profile` at its default `None` this pass
+    asks `invalidated` exactly what it asked before 6D.1 -- a delta, or nothing -- so the
+    decided population does not move at this release and 1.8's activation carries one boundary
+    instant for the whole of 1.8. An expiry is recorded exactly like any other invalidator -- its
     key's label in `reason_code`, `from_cache = false` -- with `{"expired": key, "window_s": n}`
     in the delta, so a reader of t7 can tell an expiry from a moved feature. It forces a call
     and nothing more: the call is reserved through `reserve_spend` like every other, and a
@@ -464,7 +481,14 @@ def veto_pass(session: Session, now: datetime, settings, client=None) -> dict:
             # The delta first, then the cache's age (1.8(e)): a moved key is news whatever the
             # clock says, and `expired` is set only when nothing moved but a window ran out.
             fired = invalidated(trigger_features, numeric)
-            if fired is None:
+            # D47: the expiry half of 1.8(e) ships **dormant with the rest of 1.8**. The age
+            # arguments are passed only when a pacing profile is loaded for this pass -- the
+            # same `settings.veto_pacing_profile is not None` condition T6's claim order and
+            # reservation are behind -- so with the setting `None` the call above is the whole
+            # of the invalidator, byte for byte the pre-T6b one, `expired` stays `None` and no
+            # `{"expired": ...}` delta can be written. Activating the profile activates the
+            # window with it, against one journaled boundary instant rather than two.
+            if fired is None and profile is not None:
                 expired = invalidated(trigger_features, numeric, cached_at=trigger_as_of,
                                       as_of=item.created_at)
                 fired = expired

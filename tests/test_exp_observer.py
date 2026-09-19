@@ -424,3 +424,26 @@ def test_the_cohort_selection_is_seed_deterministic_and_records_an_empty_stratum
     # an unavailable stratum is recorded as unavailable, never backfilled with anchor teams
     assert first.strata["ncaaf"] == "unavailable: 0 eligible games in the window"
     assert all(g.sport == "nfl" for g in first.games)
+
+
+def test_the_failure_row_is_recorded_even_after_a_raise_left_the_transaction_aborted(
+        db_session, env_settings, tmp_path):
+    """M17 (D35 concern 4): `_record_read_failure` was best effort with no effort.
+
+    A raise that comes out of the database -- not out of the HTTP client -- leaves PostgreSQL's
+    transaction in the aborted state, where every later statement raises
+    `InFailedSqlTransaction`; the failure row was then swallowed by the bare `except` and arm
+    C's record simply lost the read. `ExperimentWriter.rollback()` is what makes the recording
+    possible, and it can never discard a completed call's rows: `_observe_sport` commits each
+    sport's rows before it returns.
+    """
+    run = seed_run_and_cohort(db_session, env_settings, tmp_path, games=2)
+    db_session.commit()                       # the cohort is durable before the failure
+    writer = writer_for(db_session)
+    with pytest.raises(Exception):            # noqa: B017 - any DBAPI error aborts the tx
+        db_session.execute(text("select 1 / 0"))
+    observer._record_read_failure(writer, run=run, sport="nfl", now=NOW)
+    rows = [row for row in _rows(db_session, run.run_id)
+            if row.status == observer.READ_FAILED]
+    assert rows and all(row.sport == "nfl" for row in rows)
+    assert all(row.credits == 0 and row.body_path is None for row in rows)

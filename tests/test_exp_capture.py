@@ -337,3 +337,46 @@ def test_the_manifest_entry_carries_each_streams_statement_and_bound_params(db_s
     streams = json.loads(result.manifest_json)["streams"]
     assert streams["orders"]["params"]["start"] == START.isoformat()
     assert set(streams) == set(CAPTURE_STREAMS)
+
+
+def test_a_refusal_inside_a_stream_leaves_a_marked_partial_file_and_no_complete_one(
+        db_session, env_settings, tmp_path, monkeypatch):
+    """M8 (task-2 review Minor 6): §4.3's guard raises `CaptureRefused` mid-stream, and what it
+    used to leave behind was a plausible-looking `<stream>.ndjson` holding a prefix of the
+    stream -- no hash, no manifest entry, and nothing to say it was incomplete.
+
+    The refusal still propagates (a half-capture is not a capture); the bytes are kept, under a
+    name no reader can mistake for the whole stream.
+    """
+    from sqlalchemy import text
+
+    from harness.experiments.execution_viability import capture as capture_mod
+    from harness.experiments.execution_viability.capture import (CaptureRefused, PARTIAL_SUFFIX,
+                                                                 capture_slice)
+
+    _seed_actions(db_session)
+    settings = env_settings.model_copy(update={"exp_dir": tmp_path, "exp_batch_rows": 2})
+
+    def refusing(session, s, sql, params):
+        yield list(session.execute(text("select 1 as sid")).all())
+        raise CaptureRefused("the executor's last loop is more than three periods long")
+
+    monkeypatch.setattr(capture_mod, "_batches", refusing)
+    with pytest.raises(CaptureRefused):
+        capture_slice(settings, db_session, run_id="run-partial", warmup_start=START,
+                      observation_end=END, tickers=["KXNFLGAME-1"], variant_ids=[VARIANT],
+                      instants=6, live_estimate=3575)
+    directory = tmp_path / "run-partial"
+    # `books` is the first stream: its prefix is marked, and nothing is left that a re-hash or
+    # an operator could read as the complete stream.
+    assert not (directory / "books.ndjson").exists()
+    partial = directory / f"books.ndjson{PARTIAL_SUFFIX}"
+    assert partial.read_text() == '{"sid": 1}\n'
+    assert sorted(p.name for p in directory.glob("*")) == [f"books.ndjson{PARTIAL_SUFFIX}"]
+    # A later capture that completes the stream leaves no stale marker behind.
+    monkeypatch.undo()
+    capture_slice(settings, db_session, run_id="run-partial", warmup_start=START,
+                  observation_end=END, tickers=["KXNFLGAME-1"], variant_ids=[VARIANT],
+                  instants=6, live_estimate=3575)
+    assert (directory / "books.ndjson").exists()
+    assert list(directory.glob(f"*{PARTIAL_SUFFIX}")) == []

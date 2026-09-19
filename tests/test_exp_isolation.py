@@ -210,3 +210,23 @@ def test_storage_does_not_import_the_models_at_module_scope():
     lines = (PKG / "storage.py").read_text().splitlines()
     top = [ln for ln in lines if ln and not ln[0].isspace()]
     assert not any("harness.db.models" in ln for ln in top)
+
+
+def test_isolation_check_prints_the_label_before_it_touches_the_database(monkeypatch, capsys,
+                                                                        exp_settings, tmp_path):
+    """§0.6 / ruling D50: `EXP_LABEL` is the command's first stdout line.
+
+    Asserted on the fail-closed path, which is the state an operator runs this command in
+    *before* §4.7's step 0 is done: the secret is absent, `source.reader` refuses before any
+    connection, and the label has already been printed. The label is therefore first whether the
+    read-back happens or not, which is what makes it the command's first line rather than the
+    first line of its success case.
+    """
+    from harness.experiments.execution_viability import cli
+
+    object.__setattr__(exp_settings, "exp_db_password_file", tmp_path / "absent")
+    monkeypatch.setattr(cli, "get_settings", lambda: exp_settings)
+    with pytest.raises(IsolationError, match="absent"):
+        cli.isolation_check()
+    out = capsys.readouterr().out.splitlines()
+    assert out and out[0] == cli.EXP_LABEL

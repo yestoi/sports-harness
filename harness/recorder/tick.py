@@ -106,6 +106,13 @@ PRICE_BUDGET_MARGIN_S = 10
 #: cadence in force -- the 01:00-08:00 quiet window, or a tick whose ESPN fetch failed before it
 #: learned the day's kickoffs.
 DEFAULT_CADENCE_S = 900
+#: How often the recorder re-reads each sport's ESPN scoreboard, and the cadence
+#: `harness/research/features.py::ESPN_POLL_S` derives 1.8(e)'s `espn_status` validity window
+#: from (M22). A pure name for the literal that was already at both ESPN call sites -- the live
+#: `_espn` fetch and `_espn_rollover`'s dated one -- so the derivation is pinned to an exported
+#: constant instead of to a source-text match. Not the Kalshi event cadence, which is its own
+#: 900 and moves independently.
+ESPN_SCOREBOARD_S = 900
 
 #: How often the recorder re-reads `GET /account/limits` on its signed, GET-only reader (§1.3,
 #: ruling A-C3). The tick runs every `heartbeat_s` (30 s in production); the account's tier and
@@ -741,7 +748,7 @@ class Recorder:
             key = f"espn:{sport}"
             try:
                 body = None
-                if self._due(store.get_source_state(session, key), now, 900):
+                if self._due(store.get_source_state(session, key), now, ESPN_SCOREBOARD_S):
                     r = self.espn.fetch_scoreboard(sport)  # type: ignore[arg-type]
                     store.store_raw(session, run.id, "espn", _ESPN_PATH[sport], {}, r)
                     ctx["n"] += 1
@@ -789,7 +796,7 @@ class Recorder:
             return
         date_str = yesterday_et.strftime("%Y%m%d")
         key = f"espn_dated:{sport}:{date_str}"
-        if not self._due(store.get_source_state(session, key), now, 900):
+        if not self._due(store.get_source_state(session, key), now, ESPN_SCOREBOARD_S):
             return
         r = self.espn.fetch_scoreboard(sport, dates=date_str)  # type: ignore[arg-type]
         store.store_raw(session, run.id, "espn", _ESPN_PATH[sport], {"dates": date_str}, r)

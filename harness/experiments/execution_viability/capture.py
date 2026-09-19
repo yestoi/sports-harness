@@ -80,6 +80,12 @@ AVG_NDJSON_BYTES = 320
 YIELD_SLEEP_S = 5
 YIELD_MAX_WAITS = 3
 
+#: What a stream file that was never finished is called (M8). A refusal inside `capture_slice`
+#: renames the prefix it had written to `<stream>.ndjson.partial`: the bytes are kept for
+#: diagnosis, and no complete-looking `<stream>.ndjson` is left for the manifest, for a
+#: re-hash or for an operator to mistake for the whole stream.
+PARTIAL_SUFFIX = ".partial"
+
 
 class CaptureRefused(RuntimeError):
     """The capture refused to start or to continue: too large, or the executor is behind."""
@@ -533,12 +539,29 @@ def capture_slice(s: Settings, session: Session, *, run_id: str, warmup_start: d
         params = {key: value for key, value in available.items() if f":{key}" in sql}
         digest = hashlib.sha256()
         path = directory / f"{stream}.ndjson"
-        with path.open("wb") as handle:
-            for rows in _batches(session, s, sql, params):
-                body = _ndjson(rows)
-                digest.update(body)
-                handle.write(body)
-                _collect(stream, rows, context)
+        partial = path.with_suffix(path.suffix + PARTIAL_SUFFIX)
+        try:
+            with path.open("wb") as handle:
+                for rows in _batches(session, s, sql, params):
+                    body = _ndjson(rows)
+                    digest.update(body)
+                    handle.write(body)
+                    _collect(stream, rows, context)
+        except BaseException:
+            # M8 (task-2 Minor 6): §4.3's guard raises `CaptureRefused` mid-stream, and the
+            # bytes already written are a *prefix* of the stream with no hash and no manifest
+            # entry. The handle is closed by the `with` above; the file is then renamed out of
+            # the way so nothing -- a re-hash, a resume, an operator -- can read a truncated
+            # stream as the complete one. The refusal still propagates: a half-capture is not
+            # a capture, and the caller must not treat it as one.
+            if path.exists():
+                path.replace(partial)
+                log.warning("exp capture stopped inside stream=%s; the partial file is "
+                            "marked %s and has no hash", stream, partial.name)
+            raise
+        # A completed stream leaves no marker behind: a `.partial` from an earlier refusal
+        # would otherwise outlive the run that has since written the stream in full.
+        partial.unlink(missing_ok=True)
         hashes[stream] = digest.hexdigest()
         entries[stream] = {"sha256": hashes[stream], "sql": sql, "params": params}
         log.info("exp capture stream=%s sha256=%s", stream, hashes[stream][:12])

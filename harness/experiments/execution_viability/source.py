@@ -18,6 +18,17 @@ log = logging.getLogger("harness.exp")
 #: §4.3's cooperative bound, applied to the engine and re-asserted on the session.
 SOURCE_STATEMENT_TIMEOUT_MS = 25_000
 
+#: §4.3's other two settings, carried in the **connection's own startup options** (M4) rather
+#: than only as a session `SET`. `make_engine` uses `pool_pre_ping`, which silently replaces a
+#: dead connection with a fresh one: a `SET` that ran on the old connection is not on the new
+#: one, and the read-only GUC in particular would then be absent on a session the code believes
+#: is read-only. In the options string the setting is part of every connection this pool opens
+#: and survives the `reset all` a pooled connection gets at check-in. `reader()` still issues
+#: the same `SET`s afterwards, because an injected engine (the tests') has its own options and
+#: the defence is worth having twice; the role's SELECT-only grant is the third layer and the
+#: only one the server itself enforces against a writing statement.
+SOURCE_SESSION_GUCS = {"lock_timeout": "1s", "default_transaction_read_only": "on"}
+
 #: A catalogue function call: no table is read, so no index or row bound applies.
 _PRIVILEGE_PROBE = text(
     "select current_user as role_name, "
@@ -44,7 +55,8 @@ def _require_secret(s: Settings) -> None:
 
 def source_engine(s: Settings, *, role: str = EXP_DB_ROLE) -> Engine:
     _require_secret(s)
-    return make_engine(s.exp_database_url(role), SOURCE_STATEMENT_TIMEOUT_MS)
+    return make_engine(s.exp_database_url(role), SOURCE_STATEMENT_TIMEOUT_MS,
+                       session_gucs=SOURCE_SESSION_GUCS)
 
 
 @contextmanager
@@ -53,6 +65,11 @@ def reader(s: Settings, *, engine: Engine | None = None) -> Iterator[Session]:
 
     `engine` is the test seam: the secret and the privilege probe run either way, so an injected
     engine cannot bypass the refusal. Nothing here logs the URL - it carries the password.
+
+    The three §4.3 settings are applied twice on the engine this module builds: once in the
+    connection's startup options (`SOURCE_SESSION_GUCS`, which is what makes them true of a
+    connection the pool replaces mid-life) and once as the `SET`s below, which are the only
+    layer an injected engine has.
     """
     _require_secret(s)
     eng = engine if engine is not None else source_engine(s)

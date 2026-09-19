@@ -102,3 +102,60 @@ def test_service_connect_args_is_the_one_place_the_service_name_is_read(monkeypa
     assert service_connect_args() == {}
     monkeypatch.delenv("HARNESS_SERVICE", raising=False)
     assert service_connect_args() == {}
+
+
+def test_named_session_gucs_ride_the_connections_own_startup_options(monkeypatch):
+    """6D.1 carry-forward M4: a caller may ask for settings that belong to **every** connection
+    the pool opens, not only to the one a `SET` happened to run on.
+
+    `pool_pre_ping` replaces a dead connection silently, and a pooled connection is `reset all`
+    at check-in; a session-level `SET` survives neither, while libpq's `options` string is part
+    of the startup packet of each new connection and is what `RESET` restores to. The default is
+    empty, so every existing caller builds exactly the engine it built before.
+    """
+    import harness.db.engine as engine_module
+
+    monkeypatch.delenv("HARNESS_SERVICE", raising=False)
+    captured = {}
+
+    def fake_create_engine(url, **kwargs):
+        captured.update(kwargs)
+        return "engine"
+
+    monkeypatch.setattr(engine_module, "create_engine", fake_create_engine)
+    engine_module.make_engine("postgresql+psycopg://u:p@h:5432/db", 25_000,
+                              session_gucs={"lock_timeout": "1s",
+                                            "default_transaction_read_only": "on"})
+    assert captured["connect_args"]["options"] == (
+        "-c statement_timeout=25000 -c default_transaction_read_only=on -c lock_timeout=1s")
+
+
+def test_the_experiment_source_engine_carries_its_three_settings_on_the_connection(monkeypatch,
+                                                                                    tmp_path,
+                                                                                    env_settings):
+    """M4 at the call site it exists for: §4.3's three settings on `source.reader`'s engine.
+
+    The engine is built, not connected: what is asserted is the startup options the experiment's
+    read-only capability hands libpq, which is what makes the read-only GUC true of a connection
+    `pool_pre_ping` replaced mid-run. `reader()` still issues the same `SET`s afterwards.
+    """
+    import harness.db.engine as engine_module
+    from harness.experiments.execution_viability import source
+
+    monkeypatch.delenv("HARNESS_SERVICE", raising=False)
+    secret = tmp_path / "exp_db_password"
+    secret.write_text("test-only-not-a-secret")
+    s = env_settings
+    object.__setattr__(s, "exp_db_password_file", secret)
+    captured = {}
+
+    def fake_create_engine(url, **kwargs):
+        captured.update(kwargs)
+        return "engine"
+
+    monkeypatch.setattr(engine_module, "create_engine", fake_create_engine)
+    assert source.source_engine(s) == "engine"
+    options = captured["connect_args"]["options"]
+    assert f"-c statement_timeout={source.SOURCE_STATEMENT_TIMEOUT_MS}" in options
+    assert "-c default_transaction_read_only=on" in options
+    assert "-c lock_timeout=1s" in options

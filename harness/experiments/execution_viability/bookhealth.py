@@ -167,8 +167,11 @@ def summarize(rows: Sequence[HealthRow]) -> dict[str, int]:
 def persist(writer, rows: Sequence[HealthRow]) -> int:
     """Hand the classified rows to T1's writer for `exp_book_health` (§2), and return the count.
 
-    The table is T3's. Until that migration exists `writer.table` refuses by name with
-    `IsolationError`, which is `--persist`'s fail-closed behaviour and not a defect.
+    The table is T3's and exists: `migrations/versions/0015_phase6d1_exec_viability.py` creates
+    it with the other ten `exp_*` tables (M6 -- this docstring used to say the migration was
+    still to come). `writer.table` still refuses any name outside the writer's own metadata
+    with `IsolationError`, and `--persist` still fails closed without §4.7's grant, but neither
+    is a statement about this table being absent.
     """
     table = writer.table("exp_book_health")
     return writer.insert(table, [

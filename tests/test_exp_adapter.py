@@ -76,13 +76,20 @@ def _intent(session, market, *, created_at, target_prob="0.4800", signal_id=1,
 
 
 def _order(session, intent, market, *, placed_at, contracts="20", status="open", expiry=None,
-           n=1, prob="0.4800"):
+           n=1, prob="0.4800", kickoff=None):
+    """One production `orders` row, as the arm adopts it.
+
+    `kickoff` defaults to the module's own `KICKOFF`; a case whose game kicks off elsewhere
+    passes its own (M9). It used to be the module constant unconditionally, which left the
+    overnight case rebuilding the adopted `OpenOrderView` through `__class__(**__dict__)` to
+    patch a stamp the fixture could simply have written.
+    """
     order = Order(intent_id=intent.id, variant_id="v_base", venue="kalshi",
                   client_order_id=f"prod-{n}", ticker=intent.ticker, venue_market_id=market.id,
                   side="yes", prob=Decimal(prob), contracts=Decimal(contracts),
                   status=status, placed_at=placed_at,
                   expiry=expiry or placed_at + timedelta(seconds=220), game_id=market.game_id,
-                  sport="nfl", kickoff_utc=KICKOFF, match_key="k1", replay=False)
+                  sport="nfl", kickoff_utc=kickoff or KICKOFF, match_key="k1", replay=False)
     session.add(order)
     session.flush()
     session.add(OrderEvent(order_id=order.id, ts=placed_at, kind="place", prob=order.prob,
@@ -278,7 +285,7 @@ def test_an_overnight_transition_keeps_the_order_until_its_own_rule_cancels_it(d
     game = _game(db_session, kickoff=kickoff)
     market = _market(db_session, game_id=game.id)
     intent = _intent(db_session, market, created_at=late - timedelta(minutes=5), kickoff=kickoff)
-    order = _order(db_session, intent, market, placed_at=late,
+    order = _order(db_session, intent, market, placed_at=late, kickoff=kickoff,
                    expiry=late + timedelta(hours=10))
     instants = [late + timedelta(hours=h) for h in (1, 6, 11)]
     for instant in instants:
@@ -286,8 +293,8 @@ def test_an_overnight_transition_keeps_the_order_until_its_own_rule_cancels_it(d
     db_session.commit()
     runner = _runner(env_settings)
     runner.adopt(order, queue_ahead=Decimal("0"))
-    runner.world.open_orders[0] = runner.world.open_orders[0].__class__(
-        **{**runner.world.open_orders[0].__dict__, "kickoff_utc": kickoff})
+    # M9: the order carries this case's own kickoff, so the adopted view needs no rebuild.
+    assert runner.world.open_orders[0].kickoff_utc == kickoff
     results = runner.run(db_session, instants)
     # The order crosses 00:00 CT and 05:00 UTC untouched: the day boundary is not one of its
     # rules. What ends it is its own 10 h expiry, at the third instant.

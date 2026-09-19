@@ -59,16 +59,27 @@ FAIR_MOVE_INVALIDATOR = Decimal("0.02")
 #: Shortest first, which is the order `invalidated` tests them in: when more than one window has
 #: run out the strictest one names the decision.
 #: The recorder fetches each sport's ESPN scoreboard once per 900 s and no oftener
-#: (`harness/recorder/tick.py::RecorderTick._espn`, `self._due(store.get_source_state(session,
-#: key), now, 900)`, and the same 900 s on `_espn_rollover`'s dated fetch). Restated here rather
-#: than imported, for the reason `FAIR_MOVE_INVALIDATOR` is: this module is a leaf of the
-#: research package and importing the recorder tick to read one literal would pull the whole
-#: fetch path into `app-research`. `tests/test_veto_features.py` pins it to that call site.
+#: (`harness/recorder/tick.py::ESPN_SCOREBOARD_S`, used by `RecorderTick._espn` and by
+#: `_espn_rollover`'s dated fetch). Restated here rather than imported, for the reason
+#: `FAIR_MOVE_INVALIDATOR` is: this module is a leaf of the research package and importing the
+#: recorder tick to read one literal would pull the whole fetch path into `app-research`.
+#: `tests/test_veto_features.py` pins it to that constant (M22), which is the recorder's own
+#: name for the cadence rather than a match on its source text.
 ESPN_POLL_S = 900
 #: `harness/weather/snapshots.py::REFETCH_AFTER`, the weather source's per-game refetch
 #: interval ("R:211: outdoor games inside 72 hours, hourly"). Restated for the same reason and
 #: pinned to the constant itself by `tests/test_veto_features.py`.
 WEATHER_REFETCH = timedelta(hours=1)
+#: **Which of the three can fire in production** (D48, final review I-1). The trigger context
+#: never outlives one claimed `veto_queue` bucket: `veto_pass` resets `trigger_features` and
+#: `trigger_as_of` at the top of every pass, `claim_bucket` claims a single
+#: `(game_id, market_type, bucket_start)`, and a bucket is `Settings.veto_bucket_minutes` = 30
+#: minutes wide. The largest age this dict is ever asked about is therefore under 1800 s, so
+#: under today's bucket **only `espn_status` (900 s) can elapse**; `weather` (3600 s) and
+#: `fair_move` (21600 s) are the spec's declared per-key bounds (§1.8e asks for a window per
+#: key) and become reachable only if the bucket grows past them. The three keys and their
+#: derivations stay exactly as they are: shortening them to the bucket would make the two
+#: bounds say something about the cache that their own cadences do not.
 VALIDITY_WINDOWS: dict[str, timedelta] = {"espn_status": timedelta(seconds=ESPN_POLL_S),
                                           "weather": WEATHER_REFETCH,
                                           "fair_move": FEATURE_WINDOW}

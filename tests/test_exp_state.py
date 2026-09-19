@@ -26,7 +26,7 @@ from sqlalchemy import text
 from harness.db.models import (FairValue, Game, Intent, MarketGapSnapshot, MetricSample,
                                OrderbookSnapshot, VenueMarket, VenueTrade)
 from harness.execution import plan as plan_mod
-from harness.experiments.execution_viability import adapter, capture, storage
+from harness.experiments.execution_viability import IsolationError, adapter, capture, storage
 from harness.experiments.execution_viability.manifest import Manifest, ManifestMismatch
 
 NOW = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)
@@ -627,3 +627,87 @@ def test_the_window_stops_at_a_chunk_boundary_when_the_executor_is_busy(db_sessi
         "select state->'last_instant'->>'__t' as last from exp_checkpoint "
         "where run_id = :r and arm_id = 'A'"), {"r": run_id}).scalar()
     assert datetime.fromisoformat(stored) == runner.last_instant
+
+
+def test_the_freezer_and_the_resume_rebuild_derive_the_same_manifest_fields(db_session,
+                                                                            env_settings):
+    """M11 (task-3 fix round 1): the run's frozen `exp_run.manifest` and the manifest a resume
+    rebuilds must derive the same fields, or the first resume would refuse a run nothing had
+    changed about.
+
+    Asserted field by field over `storage._MANIFEST_DERIVED` -- the four the rebuild derives
+    from the caller's own code sha, schema head, variant configuration and `ExecSettings`, plus
+    the run id -- and then over the hash, which is the property the refusal actually uses.
+    """
+    exec_settings = _exec(env_settings)
+    run_id = run_arm(db_session, env_settings, arm="A", since=NOW, until=NOW + STEP)
+    document = db_session.execute(text(
+        "select manifest from exp_run where run_id = :r"), {"r": run_id}).scalar()
+    rebuilt = storage.rebuild_manifest(document, run_id=run_id, code_sha=CODE_SHA,
+                                       schema_version=SCHEMA_VERSION, variant_cfg=VARIANT_CFG,
+                                       exec_settings=exec_settings)
+    for name in storage._MANIFEST_DERIVED:
+        assert document[name] == getattr(rebuilt, name), name
+    # `baseline_settings` in particular is the one serialisation both sides take
+    # (`settings_document`), not two hand-written projections of `ExecSettings`.
+    assert document["baseline_settings"] == storage.settings_document(exec_settings)
+    stored_hash = db_session.execute(text(
+        "select manifest_hash from exp_run where run_id = :r"), {"r": run_id}).scalar()
+    assert rebuilt.freeze() == stored_hash
+
+
+def test_the_writer_updates_one_row_on_its_natural_key_and_refuses_an_unkeyed_update(db_session,
+                                                                                     env_settings):
+    """M21's mechanism: `ExperimentWriter.update` rewrites the row a natural key names.
+
+    §4.7's role holds INSERT and UPDATE on the `exp_*` tables and **no DELETE**, which is why
+    a superseded row is updated rather than deleted and written again. The guards are the
+    writer's own: a production table and a foreign `Table` object are refused here exactly as
+    they are by `insert`, and an unkeyed update -- which would rewrite the whole table -- is
+    refused before any statement runs.
+    """
+    run_id = run_arm(db_session, env_settings, arm="A", since=NOW, until=NOW + STEP)
+    writer = _writer(db_session, run_id)
+    table = writer.table("exp_limitation")
+    writer.insert(table, [{"run_id": run_id, "kind": "arm_unavailable",
+                           "scope": {"arm": "C"}, "detail": "before", "created_at": NOW}])
+    writer.commit()
+    rewritten = writer.update(table, key={"run_id": run_id, "kind": "arm_unavailable"},
+                              values={"detail": "after"})
+    writer.commit()
+    assert rewritten == 1
+    rows = db_session.execute(text(
+        "select kind, detail from exp_limitation where run_id = :r and kind = 'arm_unavailable'"),
+        {"r": run_id}).all()
+    assert [(row.kind, row.detail) for row in rows] == [("arm_unavailable", "after")]
+    with pytest.raises(ValueError, match="natural key"):
+        writer.update(table, key={}, values={"detail": "everything"})
+    from harness.db.models import Base
+
+    with pytest.raises(IsolationError, match="orders"):
+        writer.update(Base.metadata.tables["orders"], key={"id": 1}, values={"status": "x"})
+
+
+def test_the_writers_rollback_discards_its_own_work_and_keeps_the_session_usable(db_session,
+                                                                                 env_settings):
+    """M17: `rollback()` is `close()` without the close.
+
+    A caller whose step raised still has a row to record about the failure -- the observer's
+    failure path is the case -- and needs the session clean rather than gone.
+    """
+    run_id = run_arm(db_session, env_settings, arm="A", since=NOW, until=NOW + STEP)
+    writer = _writer(db_session, run_id)
+    table = writer.table("exp_limitation")
+    writer.insert(table, [{"run_id": run_id, "kind": "arm_unavailable",
+                           "scope": {"arm": "C"}, "detail": "uncommitted", "created_at": NOW}])
+    writer.rollback()
+    assert db_session.execute(text(
+        "select count(*) from exp_limitation where run_id = :r and kind = 'arm_unavailable'"),
+        {"r": run_id}).scalar() == 0
+    # And the session is still a session: the next write goes through.
+    writer.insert(table, [{"run_id": run_id, "kind": "arm_unavailable",
+                           "scope": {"arm": "C"}, "detail": "recorded", "created_at": NOW}])
+    writer.commit()
+    assert db_session.execute(text(
+        "select detail from exp_limitation where run_id = :r and kind = 'arm_unavailable'"),
+        {"r": run_id}).scalar() == "recorded"
