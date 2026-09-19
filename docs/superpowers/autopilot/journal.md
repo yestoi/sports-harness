@@ -3549,3 +3549,16 @@ User, verbatim (07:19 CT, in chat): "Read /home/trey/dev/sports/.superpowers/sdd
 - Dispatches: 0 new (batch 3 of 12; day 12).
 - Result: PASS (diagnosis complete, row 89 Open).
 - Next: canary 07:41 CT (aae03f46); row 89 brief and sonnet implementer in worktree fix-2026-09-19-residual-rotation; full verify and daily line 09:01 CT (7d72d33d).
+
+## 303. verify - canary read one hour after release 01e7b0c - 2026-09-19 07:41-07:44 CT
+
+- Orient: verify (wakeup aae03f46, the canary read journal 299 armed; no deploy: R4 from 10:15 CT).
+- Layer 1: healthz build 01e7b0c, status ok; app-exec and app-serve healthy, app-ws/app-run/app-research up about an hour, postgres and app-backup up 4 days.
+- Layer 2: no ERROR lines in 10 min across the five app containers; WS age 2 s; gap rows in the last hour 0.
+- Loop: `exec.loop_ms` 06:41-07:41 CT p95 24,127 ms, max 26,828 ms over 47 samples, against 113,137 ms over 44 samples the hour before the release (the row 88 re-read still costs about 17 s of it, journal 302). Recorder: `recorder.tick_ms` p95 252 ms (max 2,533 ms) over 120 samples; `recorder.rss_mb` 189.9 now, 143.1 minimum in the hour.
+- Fills: 4 in 06:37-07:41 CT against 0 in 05:33-06:37 CT; orders placed 0 in both hours (no pricing placements on a Saturday morning). No step-down, no alarm.
+- Verification: canary layers 1-2 PASS on every deterministic row; judge-after rows deferred as listed; no FAIL.
+- Judge-after: fix 87 deferred (130 runs since the release, 0 `budget_exhausted`, the fix 48 clause reads 0); fix 85 deferred (`exec.placed` 0 since the release, `exec.phase_place_ms` idle); 6D row 5 waits for the 10:30 CT game window (verify.md:828), 5 priced daytime ticks so far; 6D.1 rows deferred (no `exp_run` row since the release).
+- Dispatches: 0 (verify unit 0 of 3).
+- Result: PASS (canary healthy; nothing judged FAIL).
+- Next: 09:01 CT full verify with Layer 2b invariants and the Chrome walker, daily line (7d72d33d); row 89 implementer running (chase 09:08 CT); 6D rows 5 and 8 at the 10:30 CT slate.

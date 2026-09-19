@@ -1,6 +1,6 @@
 # Autopilot checkpoint
 
-Updated 2026-09-19 07:40 CT (12:40 UTC Sep 19) by controller session sports-e2 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 302. Paper-only. Runtime build: **01e7b0c** (journal 299, full release 06:37 CT Sep 19: fix 85 index 0014, 6D Task 11, fix 87, 6D.1 schema 0015). Main is c5a9912 (runtime 01e7b0c plus docs only: no deploy trigger). Rollback (ruling 3, journal 298): on executor/recorder down or app-serve unhealthy the user stamps alembic back to 0013 by hand, then the loop redeploys 4066197 in full; a subtle defect waits for the Sunday gap or Monday.
+Updated 2026-09-19 07:45 CT (12:45 UTC Sep 19) by controller session sports-e2 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 303. Paper-only. Runtime build: **01e7b0c** (journal 299, full release 06:37 CT Sep 19: fix 85 index 0014, 6D Task 11, fix 87, 6D.1 schema 0015). Main is c5a9912 (runtime 01e7b0c plus docs only: no deploy trigger). Rollback (ruling 3, journal 298): on executor/recorder down or app-serve unhealthy the user stamps alembic back to 0013 by hand, then the loop redeploys 4066197 in full; a subtle defect waits for the Sunday gap or Monday.
 
 ## Right now
 
@@ -33,7 +33,7 @@ Updated 2026-09-19 07:40 CT (12:40 UTC Sep 19) by controller session sports-e2 i
 ## Pending results
 
 - Agents: hotfix batch `.superpowers/sdd/hotfix-2026-09-19-rulings/` (clock 06:44 CT, wall-clock ceiling 3 h = 09:44 CT): dispatch 4 row 89 implementer running (07:38 CT, chase 09:08 CT); dispatches 1-3 done. Suites: the implementer's own `make test` on harness_test_fix_2026_09_19_residual_rotation.
-- Wakeups (sports-e2, CronList): aae03f46 Sat 07:41 CT (canary read: L1/L2, exec.loop_ms since 06:37 CT vs 113,137 ms p95 before, recorder pair, fix 87 and 6D row 5 judge-after if triggered); 7d72d33d Sat 09:01 CT (daily line, full verify with 2b and the walker, judge-after rows).
+- Wakeups (sports-e2, CronList): aae03f46 fired 07:41 CT (canary PASS, journal 303: loop p95 24,127 ms vs 113,137 before; fills 4 vs 0; judge-after rows all deferred); 7d72d33d Sat 09:01 CT (daily line, full verify with 2b and the walker, judge-after rows).
 - Receipts: release 01e7b0c (suite 4,533/1 at 01e7b0c match head; `/srv/sports-harness/releases/20260919T113439Z-01e7b0c`); evidence/2026-09-19-deploy-0637-{summary,release}.txt.
 - Fixture grant UPDATE(indisvalid) ON: harness_test_main (+ shards), phase6d_merge_main, phase6d_merge_review, phase6d1_t5_bookhealth (t1_contract revoked); older fix databases: `make testdb-prune`.
 - Worktrees: phase6d1-t5-bookhealth (T5), fix-2026-09-18-orders-intent-index (merged, kept to the release), phase6d-merge-main; Mac-era fix-45/fix-48/recovery and restart-worker-smoke preserved.
