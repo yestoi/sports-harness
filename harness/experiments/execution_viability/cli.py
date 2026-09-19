@@ -932,19 +932,28 @@ _DECIDE_OBSERVED_ORDERS = text(
     "from orders where variant_id = :v and not replay")
 
 #: §1.10's clean-book eligibility, **measured** (fix round 1, Critical 2): the live watched
-#: filled orders whose fill instant lies in no interval this run classified `data_loss_confirmed`
-#: or `unresolved` for that ticker. `inactive_confirmed` is a quiet market, not a faulted book,
-#: so it does not exclude a fill. Bounded by the variant and by the run's own health rows; asked
-#: only when the run classified something, because "no classification" is *unmeasured* and the
-#: fill count is not a substitute for a measurement.
+#: filled orders none of whose fills lies in an interval this run classified
+#: `data_loss_confirmed` or `unresolved` for that ticker. `inactive_confirmed` is a quiet market,
+#: not a faulted book, so it does not exclude a fill. Bounded by the variant and by the run's own
+#: health rows; asked only when the run classified something, because "no classification" is
+#: *unmeasured* and the fill count is not a substitute for a measurement.
+#:
+#: The predicate is **per order**, not per fill row (fix round 2, ruling D39). Filtering fill rows
+#: and then counting `distinct order_id` lets an order with several partial fills escape through
+#: whichever one happened to land outside the faulted interval, which would report an order that
+#: was partly filled against a book this run could not vouch for as eligible. The population is
+#: the same one `_DECIDE_OBSERVED_FILLS` counts - an order with at least one live `queue_model`
+#: fill - so the eligible count is always a subset of the filled-order count above it.
 _DECIDE_CLEAN_BOOK = text(
-    "select count(distinct o.id) as clean from fills f "
-    "join orders o on o.id = f.order_id "
-    "where o.variant_id = :v and f.fill_method = 'queue_model' and not f.replay "
-    "and not exists (select 1 from exp_book_health h where h.run_id = :r "
-    "and h.ticker = o.ticker "
+    "select count(*) as clean from orders o "
+    "where o.variant_id = :v "
+    "and exists (select 1 from fills f where f.order_id = o.id "
+    "and f.fill_method = 'queue_model' and not f.replay) "
+    "and not exists (select 1 from fills f join exp_book_health h "
+    "on h.run_id = :r and h.ticker = o.ticker "
     "and h.classification in ('data_loss_confirmed', 'unresolved') "
-    "and f.filled_at >= h.interval_start and f.filled_at < h.interval_end)")
+    "and f.filled_at >= h.interval_start and f.filled_at < h.interval_end "
+    "where f.order_id = o.id and f.fill_method = 'queue_model' and not f.replay)")
 
 
 def _decide_observed(session, variant_id: str | None, *, run_id: str, mature_outcomes: int,
@@ -976,9 +985,10 @@ def _decide_observed(session, variant_id: str | None, *, run_id: str, mature_out
     if health_intervals:
         clean = int(session.execute(
             _DECIDE_CLEAN_BOOK, {"v": variant_id, "r": run_id}).scalar() or 0)
-        source = (f"this run's {health_intervals} exp_book_health intervals (a fill inside a "
-                  "data_loss_confirmed or unresolved interval for its ticker is excluded; an "
-                  "inactive_confirmed interval is a quiet market and excludes nothing)")
+        source = (f"this run's {health_intervals} exp_book_health intervals (an order is "
+                  "eligible only when **none** of its fills fell inside a data_loss_confirmed "
+                  "or unresolved interval for its ticker; an inactive_confirmed interval is a "
+                  "quiet market and excludes nothing)")
     else:
         notes.append("clean-book eligibility is unmeasured: this run has no exp_book_health "
                      "row, and the filled-order count is not a substitute for a classification")

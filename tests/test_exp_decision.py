@@ -270,10 +270,15 @@ def test_decide_renders_the_six_sections_for_a_frozen_run(db_session, env_settin
 def _seed_observed_base(db_session):
     """The live watched base of §1.10, with one replay order and one non-queue_model fill.
 
-    Hand-computed: two **live** orders (the replay one is not observed), one filled order (two
-    partial fill rows on it are one order), one distinct filled game, and a four-day window
-    (2026-09-01 12:00 to 2026-09-05 12:00). With the replay order counted the window would be
-    104 days and the order count three - which is exactly what fix round 1's Critical 1 was.
+    Hand-computed: three **live** orders (the replay one is not observed), two filled orders
+    (the two partial fill rows on the first are one order), two distinct filled games, and a
+    four-day window (2026-09-01 12:00 to 2026-09-05 12:00). With the replay order counted the
+    window would be 104 days and the order count four - which is exactly what fix round 1's
+    Critical 1 was.
+
+    The first filled order **straddles** the faulted book interval the case adds: one of its two
+    fills is inside it and one is outside. Ruling D39: that order is not clean-book-eligible,
+    and the order whose only fill is outside every faulted interval is.
     """
     import uuid
     from datetime import timedelta
@@ -286,7 +291,7 @@ def _seed_observed_base(db_session):
                                    tier="secondary", config_json={}, registered_at=NOW,
                                    active=True))
     markets = []
-    for n, game_id in ((1, 101), (2, 102), (3, 103)):
+    for n, game_id in ((1, 101), (2, 102), (3, 103), (4, 104)):
         vm = VenueMarket(venue="kalshi", ticker=f"KXDECIDE-{n}", event_ticker=f"E-{n}",
                          series_ticker="KXDECIDE", game_id=game_id, market_type="moneyline",
                          first_seen_raw_id=n, last_seen_at=NOW)
@@ -299,7 +304,8 @@ def _seed_observed_base(db_session):
     for n, (market, placed_at, replay) in enumerate(
             ((markets[0], t0, False),
              (markets[1], t0 + timedelta(days=4), False),
-             (markets[2], t0 - timedelta(days=100), True)), start=1):
+             (markets[2], t0 - timedelta(days=100), True),
+             (markets[3], t0 + timedelta(days=2), False)), start=1):
         order = Order(intent_id=uuid.uuid4(), variant_id=variant_id, venue="kalshi",
                       client_order_id=f"dec-{n}-{uuid.uuid4().hex[:6]}", ticker=market.ticker,
                       venue_market_id=market.id, side="yes", prob=Decimal("0.4800"),
@@ -318,9 +324,10 @@ def _seed_observed_base(db_session):
                             replay=replay))
 
     fill(orders[0], t0 + timedelta(hours=1), "queue_model", "t-1")   # one order, two fill rows
-    fill(orders[0], t0 + timedelta(hours=2), "queue_model", "t-2")
+    fill(orders[0], t0 + timedelta(hours=2), "queue_model", "t-2")   # this one is outside it
     fill(orders[1], t0 + timedelta(days=4, hours=1), "snapshot_cross", "t-3")  # not rested
     fill(orders[2], t0 - timedelta(days=99), "queue_model", "t-4", replay=True)  # not observed
+    fill(orders[3], t0 + timedelta(days=2, hours=1), "queue_model", "t-5")  # a clean-book fill
     db_session.flush()
     return variant_id, t0
 
@@ -364,10 +371,11 @@ def test_decide_reads_the_observed_base_without_replay_or_snapshot_fills(db_sess
     _frozen_run(db_session, run_id)
     variant_id, t0 = _seed_observed_base(db_session)
     _seed_arms_and_outcome(db_session, run_id, variant_id, t0)
-    # One faulted interval over both of the filled order's fill rows: its clean-book
-    # eligibility is therefore 0 of 1 filled order, which the fill count would have hidden.
+    # One faulted interval over the **first** of that order's two fill rows only (ruling D39):
+    # an order is clean-book-eligible when *none* of its fills fell inside a faulted interval,
+    # so the straddling order is excluded and only the fourth order's fill counts as clean.
     db_session.add(ExpBookHealth(run_id=run_id, ticker="KXDECIDE-1", interval_start=t0,
-                                 interval_end=t0 + timedelta(hours=3),
+                                 interval_end=t0 + timedelta(minutes=90),
                                  classification="data_loss_confirmed", evidence={}))
     db_session.flush()
 
@@ -376,15 +384,18 @@ def test_decide_reads_the_observed_base_without_replay_or_snapshot_fills(db_sess
                                      "--since", WINDOW_SINCE, "--until", WINDOW_UNTIL])
     assert result.exit_code == 0, result.stdout
     out = result.stdout
-    # Two live orders, two fill rows on one filled order, one distinct filled game.
-    assert "observed base: orders=2 placed, 2 partial-fill rows on 1 filled orders" in out
-    assert "observed fills: 1 (watched, live facts)" in out
-    assert "distinct filled games: 1;" in out
+    # Three live orders, three live queue_model fill rows on two filled orders (two of them on
+    # the first order), two distinct filled games.
+    assert "observed base: orders=3 placed, 3 partial-fill rows on 2 filled orders" in out
+    assert "observed fills: 2 (watched, live facts)" in out
+    assert "distinct filled games: 2;" in out
     # The four-day live window, not the 104 days the replay order would have stretched it to.
-    assert "(1 in 4 elapsed days)" in out
+    assert "(2 in 4 elapsed days)" in out
     assert "104" not in out
-    # Clean-book eligibility is measured against this run's own classified intervals.
-    assert "clean-book-eligible filled orders: 0" in out
+    # Ruling D39: the straddling order (one fill inside the faulted interval, one outside) is
+    # **not** eligible, so 1 of the 2 filled orders is - not 2, which a per-fill filter gives.
+    assert "clean-book-eligible filled orders: 1" in out
+    assert "clean-book-eligible filled orders: 2" not in out
     assert "exp_book_health intervals" in out
     # The matured outcome is arm A's own, and §3's run-wide count names its own scope.
     assert "1 mature markout outcomes for the projected portfolio identity's baseline arm" in out
