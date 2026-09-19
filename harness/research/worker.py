@@ -57,7 +57,12 @@ PassFn = Callable[[Session, datetime, Settings], dict]
 #: The modules `load_passes()` imports. T15 appends "harness.research.veto"; T18 appends
 #: "harness.research.annotate". Never import one from here: the import happens at run time so a
 #: module that does not exist yet cannot break this one.
-PASS_MODULES: list[str] = ["harness.research.veto", "harness.research.annotate"]
+PASS_MODULES: list[str] = [
+    "harness.research.veto",
+    "harness.research.annotate",
+    "harness.experiments.execution_viability.observer",   # 6D.1 §4.2: inert unless
+]                                                         # exp_observer_enabled and a frozen
+                                                          # exp_run row exists (§7 item 3 (vi))
 
 #: Every registered pass, in registration order.
 PASSES: list[tuple[str, PassFn]] = []
