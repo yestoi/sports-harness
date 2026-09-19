@@ -112,3 +112,45 @@ def test_a_window_that_reconstructs_no_sport_is_refused_rather_than_guessed(db_s
         cli._cadence_allowance(db_session, arms.ARMS["B"], env_settings, variant_ids=["nope"],
                                since=WINDOW_START, until=FAIR_TS + timedelta(hours=1),
                                window_start=WINDOW_START)
+
+
+# --- T7: `exp observe` (fix round 1, Important 8) ----------------------------------------------
+
+
+def test_observe_is_registered_and_documents_its_two_options():
+    assert "observe" in runner.invoke(exp_app, ["--help"]).stdout
+    result = runner.invoke(exp_app, ["observe", "--help"])
+    assert result.exit_code == 0
+    rendered = " ".join(result.stdout.split())
+    assert "--run-id" in rendered and "--once" in rendered
+
+
+def test_observe_refuses_a_run_that_was_never_frozen(db_session, env_settings, monkeypatch):
+    """§1.6(h): arm C is reported unavailable with its reason; no tier is bought, no cap raised.
+
+    `_step_zero` is replaced with its pass answer so this case reaches step 4's coverage check:
+    the test role's privilege read-back is a different refusal, covered by its own message.
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def reader(_s):
+        yield db_session
+
+    monkeypatch.setattr(cli.source, "reader", reader)
+    monkeypatch.setattr(cli, "get_settings", lambda: env_settings)
+    monkeypatch.setattr(cli, "_step_zero", lambda session: None)
+    result = runner.invoke(exp_app, ["observe", "--run-id",
+                                     "0198e2b0-0000-7000-8000-00000000dead"])
+    lines = result.stdout.splitlines()
+    assert result.exit_code == 1
+    # §0.6: the label first, before any other line the command prints.
+    assert lines[0].strip() == cli.EXP_LABEL
+    unavailable = [ln for ln in lines if ln.startswith("arm C unavailable:")]
+    assert len(unavailable) == 1 and "no frozen exp_run row" in unavailable[0]
+    assert any("no tier is bought and no cap is raised" in ln for ln in lines)
+    # The activation checklist and the live gate values are printed, and no secret is.
+    assert any("activation checklist" in ln for ln in lines)
+    assert any("research_worker_enabled=" in ln and "anthropic_key_present=" in ln
+               for ln in lines)
+    assert "test-key" not in result.stdout

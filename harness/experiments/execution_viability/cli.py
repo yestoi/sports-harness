@@ -6,14 +6,14 @@ from decimal import Decimal
 
 import typer
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError, OperationalError
 
 from harness.config.settings import get_settings
 from harness.execution.book import newest_ws_connect
-from harness.experiments.execution_viability import EXP_DB_ROLE, EXP_LABEL
+from harness.experiments.execution_viability import EXP_DB_ROLE, EXP_LABEL, IsolationError
 from harness.experiments.execution_viability import (adapter, arms, baseline, bookhealth,
-                                                     capture, episodes, liquidity, observer,
-                                                     outcomes, report, source, storage,
-                                                     veto_profile)
+                                                     capture, episodes, liquidity, outcomes,
+                                                     report, source, storage, veto_profile)
 from harness.logging_setup import configure_logging
 from harness.research import pacing
 
@@ -700,7 +700,8 @@ ACTIVATION_CHECKLIST: tuple[tuple[str, str, str], ...] = (
      "the harness_exp grant and secrets/exp_db_password exist (§4.7); until they do every "
      "run fails closed with IsolationError at session open"),
     ("1", "loop",
-     "frozen manifest: exp_run.status = 'frozen', hash recorded, cohort ids and seed printed"),
+     "frozen manifest: exp_run.status = 'frozen', hash recorded, cohort ids and seed printed; "
+     "the cohort id space is games.odds_api_event_id, the provider event id"),
     ("2", "loop",
      "recorded measurement boundary: the activation instant in UTC and CT, journaled and "
      "written to exp_run before the first observation"),
@@ -712,7 +713,9 @@ ACTIVATION_CHECKLIST: tuple[tuple[str, str, str], ...] = (
      "credits_watch_fraction guard, the cohort's eligible-market enumeration complete"),
     ("5", "loop",
      "ordinary release verification: the deploy carrying the observer passes §3 and the "
-     "standing verify rows"),
+     "standing verify rows, **and app-research's own loop is running** - "
+     "ResearchWorker.run_once returns before every pass unless research_worker_enabled is "
+     "true and the Anthropic key file is present, so arm C collects nothing without both"),
     ("6", "the user", "the veto profile's activation, if any, is §0.14c's dated decision"),
     ("7", "the user", "any production holding-policy adoption is §0.14a's dated decision"),
 )
@@ -724,8 +727,17 @@ _NO_PURCHASE = ("scope is reduced or arm C is reported unavailable with its reas
 
 
 def _step_zero(session) -> str | None:
-    """§4.6 step 0's privilege read-back, or the reason arm C cannot start (C2, §3 row 2)."""
-    rows = session.execute(_PRIVILEGE_READBACK, {"role": EXP_DB_ROLE}).all()
+    """§4.6 step 0's privilege read-back, or the reason arm C cannot start (C2, §3 row 2).
+
+    `has_table_privilege` raises when the role itself does not exist, which is step 0 not being
+    done rather than a fault of this command, so it is reported the same way as a failed
+    read-back (fix round 1, Important 9).
+    """
+    try:
+        rows = session.execute(_PRIVILEGE_READBACK, {"role": EXP_DB_ROLE}).all()
+    except DBAPIError:
+        return (f"step 0's privilege read-back could not run: the {EXP_DB_ROLE!r} role does "
+                f"not exist; §4.7's CREATE ROLE / GRANT is the user's one-off step")
     writable = sorted(name for name, may in rows if may)
     if writable:
         return (f"step 0's privilege read-back fails: {EXP_DB_ROLE} may INSERT into "
@@ -739,72 +751,114 @@ def _step_zero(session) -> str | None:
     return None
 
 
+def _unavailable(reason: str) -> None:
+    """§1.6(h)'s refusal, printed the one way, then exit 1."""
+    print(f"arm C unavailable: {reason}")
+    print(f"  {_NO_PURCHASE}")
+    raise typer.Exit(code=1)
+
+
 @exp_app.command("observe")
 def observe_cmd(run_id: str = typer.Option(..., "--run-id"),
                 once: bool = typer.Option(False, "--once/--no-once")) -> None:
-    """Arm C's observation, by hand (§1.6e). Prints §4.6's activation checklist, then the two
+    """Arm C's observation, by hand (§1.6e). Prints §4.6's activation checklist, then the
     preflights that can refuse it.
 
     **Activates nothing.** The ordinary home of this work is `app-research`'s worker loop
-    (§4.2), which runs it only when `exp_observer_enabled` is set and a frozen `exp_run` row
-    exists. Without `--once` this command reads and prints only. With `--once` it makes exactly
-    one interval's reads -- one `fetch_featured` per sport in the cohort, six credits -- under
-    the same two checks the pass runs, and writes only `exp_observation` rows through §1.1(c)'s
-    writer.
+    (§4.2), which runs it only when `exp_observer_enabled` is set, §4.7's secret is in place and
+    a frozen `exp_run` row's observation window is open. Without `--once` this command reads and
+    prints only. With `--once` it makes exactly one interval's reads -- one `fetch_featured` per
+    sport in the cohort, six credits -- under the same checks the pass runs, and writes only
+    `exp_observation` rows through §1.1(c)'s writer.
 
-    It **refuses to start** when step 0's privilege read-back fails or when step 4's budget and
-    coverage preflight does not fit, printing `arm C unavailable: <reason>` (§1.6h).
+    It **refuses to start** when step 0's grant or secret is missing, when its privilege
+    read-back fails, or when step 4's budget and coverage preflight does not fit, printing
+    `arm C unavailable: <reason>` and §1.6(h)'s no-purchase line (§1.6h).
     """
     configure_logging()
     # §0.6: the label first, after the arguments are validated and before any number.
     print(EXP_LABEL)
+    # Imported here, not at module scope: `observer.py` calls `register_pass` at import, and
+    # `harness/cli.py` imports this module in **every** `harness` process. A package-level
+    # import would put the observer in `PASSES` before `load_passes()` imports veto and
+    # annotate, inverting the sweep order `PASS_MODULES` documents (fix round 1, Important 4).
+    from harness.experiments.execution_viability import observer
+
     s = get_settings()
     print(f"activation checklist (§4.6), run={run_id}:")
     for step, owner, text_ in ACTIVATION_CHECKLIST:
         print(f"  ({step}) {owner:<9} {text_}")
-    with source.reader(s) as session:
-        refusal = _step_zero(session)
-        if refusal is None:
-            run = observer.begin_run(session, s, run_id=run_id,
-                                     now=datetime.now(timezone.utc))
-            if run is None:
-                refusal = f"no frozen exp_run row for {run_id} (§4.6 step 1)"
-            elif not run.games:
-                refusal = ("the frozen manifest enumerates no eligible cohort market "
-                           "(§4.6 step 4's coverage check)")
-            else:
-                ok, reason = observer.budget_ok(s, credits_used=run.credits_used,
-                                                remaining=run.remaining)
-                if not ok:
-                    refusal = (f"step 4's budget check refuses on {reason}: used="
-                               f"{run.credits_used} cap={s.exp_observer_credit_cap} "
-                               f"remaining={run.remaining}")
-        if refusal is not None:
-            print(f"arm C unavailable: {refusal}")
-            print(f"  {_NO_PURCHASE}")
-            raise typer.Exit(code=1)
-        print(f"  (1) cohort         {len(run.games)} games, seed={run.seed}")
-        for game in run.games:
-            print(f"      game         {game.sport:<6} {game.canonical_game_id} "
-                  f"kickoff={game.kickoff_utc.isoformat()} markets={len(game.markets)}")
-        print(f"  (4) budget         used={run.credits_used} "
-              f"cap={s.exp_observer_credit_cap} remaining={run.remaining} "
-              f"per_interval={2 * observer.CREDITS_PER_CALL}")
-        print(f"      interval       {s.exp_observe_interval_s} s")
-        if not once:
-            print("nothing observed: --once makes one interval's reads; the prospective "
-                  "cohort runs in app-research's worker loop (§4.2)")
-            return
-        now = datetime.now(timezone.utc)
-        writer = storage.ExperimentWriter.open(s, run_id=run_id)
-        try:
-            spent = observer.observe_once(session, now, s, observer._client(s), run=run,
-                                          writer=writer)
-            writer.commit()
-        finally:
-            writer.close()
+    # The live values of the three booleans that gate collection. Never a secret's content:
+    # `has_anthropic_key()` and `has_exp_db_password()` are `is_file()`-and-non-empty tests.
+    print(f"  gates            research_worker_enabled={s.research_worker_enabled} "
+          f"anthropic_key_present={s.has_anthropic_key()} "
+          f"exp_observer_enabled={s.exp_observer_enabled} "
+          f"exp_db_password_present={s.has_exp_db_password()}")
+    now = datetime.now(timezone.utc)
+    try:
+        with source.reader(s) as session:
+            refusal = _step_zero(session)
+            if refusal is None:
+                run = observer.begin_run(session, s, run_id=run_id, now=now)
+                if run is None:
+                    refusal = f"no frozen exp_run row for {run_id} (§4.6 step 1)"
+                elif not run.games:
+                    refusal = (
+                        "the frozen manifest resolves to no eligible cohort market "
+                        "(§4.6 step 4's coverage check): the cohort id space is "
+                        "games.odds_api_event_id, the provider event id, and every listed id "
+                        "must name a game with a confidently matched direct-fair market")
+                else:
+                    ok, reason = observer.budget_ok(s, credits_used=run.credits_used,
+                                                    remaining=run.remaining)
+                    if not ok:
+                        refusal = (f"step 4's budget check refuses on {reason}: used="
+                                   f"{run.credits_used} cap={s.exp_observer_credit_cap} "
+                                   f"remaining={run.remaining}")
+                    elif run.window_end is not None and now > run.window_end:
+                        refusal = (f"the frozen observation window closed at "
+                                   f"{run.window_end.isoformat()} (§1.6g)")
+            if refusal is not None:
+                _unavailable(refusal)
+            print(f"  (1) cohort         {len(run.games)} games, seed={run.seed}")
+            for game in run.games:
+                print(f"      game         {game.sport:<6} {game.canonical_game_id} "
+                      f"kickoff={game.kickoff_utc.isoformat()} markets={len(game.markets)}")
+            window = run.window_end.isoformat() if run.window_end else "none"
+            print(f"      window end     {window}")
+            print(f"  (4) budget         used={run.credits_used} "
+                  f"cap={s.exp_observer_credit_cap} remaining={run.remaining} "
+                  f"per_interval={2 * observer.CREDITS_PER_CALL}")
+            print(f"      interval       {s.exp_observe_interval_s} s")
+            print(f"      raw bodies     {run.body_bytes} bytes stored, ceiling "
+                  f"{s.exp_raw_body_max_gb} GiB")
+            if not once:
+                print("nothing observed: --once makes one interval's reads; the prospective "
+                      "cohort runs in app-research's worker loop (§4.2)")
+                return
+            writer = storage.ExperimentWriter.open(s, run_id=run_id)
+            try:
+                spent = observer.observe_once(session, now, s, observer.odds_client(s),
+                                              run=run, writer=writer)
+                writer.commit()
+            finally:
+                writer.close()
+                # Nothing calls `worker.close_passes()` in a one-shot process, so this command
+                # owns the client's teardown (fix round 1, Minor 7).
+                observer.close_client()
+    except IsolationError as refused:
+        # §4.6 step 0's own headline failures -- no secret, no role -- raise out of
+        # `source.reader` before `_step_zero` can run, and §1.6(h) requires a refusal here,
+        # not a traceback (fix round 1, Important 9).
+        _unavailable(f"step 0 is not done: {refused}")
+    except OperationalError:
+        # Deliberately not the driver's message: it can carry the connection string.
+        _unavailable(
+            "step 0 is not done: the harness_exp role cannot connect to the harness database "
+            "(§4.7's CREATE ROLE / GRANT has not been run, or the password in "
+            "secrets/exp_db_password does not match the role's)")
     print(f"observed at {now.isoformat()} credits={spent} used={run.credits_used} "
           f"remaining={run.remaining}")
     if run.dormant:
         print(f"  dormant        {run.dormant}; every scheduled-but-unmade read is labelled "
-              f"{observer.SKIPPED_BUDGET} and the run never retries (§1.6i)")
+              f"and the run never retries (§1.6i)")
