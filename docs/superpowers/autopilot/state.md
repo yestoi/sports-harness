@@ -1,10 +1,10 @@
 # Autopilot checkpoint
 
-Updated 2026-09-19 06:41 CT (11:41 UTC Sep 19) by controller session sports-e2 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 299. Paper-only. Runtime build: **01e7b0c** (journal 299, full release 06:37 CT Sep 19: fix 85 index 0014, 6D Task 11, fix 87, 6D.1 schema 0015). Main equals the runtime. Rollback (ruling 3, journal 298): on executor/recorder down or app-serve unhealthy the user stamps alembic back to 0013 by hand, then the loop redeploys 4066197 in full; a subtle defect waits for the Sunday gap or Monday.
+Updated 2026-09-19 06:55 CT (11:55 UTC Sep 19) by controller session sports-e2 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 300. Paper-only. Runtime build: **01e7b0c** (journal 299, full release 06:37 CT Sep 19: fix 85 index 0014, 6D Task 11, fix 87, 6D.1 schema 0015). Main is c5a9912 (runtime 01e7b0c plus docs only: no deploy trigger). Rollback (ruling 3, journal 298): on executor/recorder down or app-serve unhealthy the user stamps alembic back to 0013 by hand, then the loop redeploys 4066197 in full; a subtle defect waits for the Sunday gap or Monday.
 
 ## Right now
 
-- **Released 01e7b0c 06:37 CT (journal 299)**: healthy, stamp verified, summary 9/9, indexes valid, alembic 0015; judge-after: fix 87 (first exhausted run), 6D row 5 (first daytime priced tick), row 4 (Sun 06:37 CT), row 8 (10:30 CT slate); Layer 2b and the walker at 09:01 CT. Rulings 4-5 applied (rows 86 Watch, 79 Closed, 88 Open); ruling 6 (item 1 runbook) is the next unit after verify; §4.7 part A is the user's now.
+- **Released 01e7b0c 06:37 CT (journal 299)**: healthy, stamp verified, summary 9/9, indexes valid, alembic 0015; judge-after: fix 87 (first exhausted run), 6D row 5 (first daytime priced tick), row 4 (Sun 06:37 CT), row 8 (10:30 CT slate); Layer 2b and the walker at 09:01 CT. Rulings 4-5 applied (rows 86 Watch, 79 Closed, 88 Open); ruling 6's runbook correction committed c5a9912 (journal 300); item 1 (a) and §4.7 part A are the user's now.
 - **6D.1 phase done (journal 295)**: branch 60dd46a..88490e1 merged to main; archive docs/superpowers/reviews/2026-09-19-phase6d1-*; deploy gated on item 24; user-side: §4.7 CREATE ROLE + secret, §4.6 activation, §0.14a-c, M20 index; spec-defect list in journal 295.
 - **Fix 87 (287)** released; judge-after: 6D row 2 reads 0 on the first `budget_exhausted` run after 06:37 CT. **Task 11 (283)** released; judge-after SQL (plan step 3).
 - **Fix 85 (282)**: released, `ix_orders_intent` valid; judge `exec.phase_place_ms` per `exec.placed` at the next placements.
@@ -16,7 +16,7 @@ Updated 2026-09-19 06:41 CT (11:41 UTC Sep 19) by controller session sports-e2 i
 
 ## Order of work
 
-1. Development priority: released 01e7b0c (299); 09:01 CT: full verify (2b, walker), daily line; then ruling 6's runbook correction (item 1), then row 88's measurement; 4.6 T18b waits on the Sunday NFL window.
+1. Development priority: released 01e7b0c (299); 09:01 CT: full verify (2b, walker), daily line; ruling 6's runbook done (300); row 88's measurement next (design report pending); 4.6 T18b waits on the Sunday NFL window.
 2. Fri 2026-09-18 done: query 4 both halves (Saturday brief); window reads 1 and 2 (journal 293-294: 6B PASS, 6D row 2 FAIL stands on the unreleased row 87, coverage waived, fills AFTER half shows no step-down, no alarm; page_time FAIL on two of four runs at load, ruled a point measurement, flagged to the user). Released 06:37 CT.
 3. Verify after each release: journal 219's deferred rows, items 12/16, rows 49/68, the 6B by-cause row, Watch reads (56, 70); Task 11's and fix 87's judge-after; `exec.phase_place_ms` per `exec.placed` after fix 85.
 4. Operate: storage retention proposal `reports/2026-09-15-storage-retention-proposal.md` (the user decides by 2026-09-22); Friday alias pass done (285), next Monday 09:30 CT; 6D acceptance rows and 4.6 T18b/T19 wait for game windows; usage.py measurement is the user's (247).
@@ -25,6 +25,7 @@ Updated 2026-09-19 06:41 CT (11:41 UTC Sep 19) by controller session sports-e2 i
 
 - none in flight (6D.1 closed by journal 295; workspace `.superpowers/sdd/2026-09-18-phase6d1-execution-viability/` removed, results under `.superpowers/sdd/results/phase6d1-*` kept).
 - **hotfix row 87**: done to merge (8681b74); batch closed at 2 of 12, 11:03-12:39 CT; worktree and branch removed; grant revoked.
+- **hotfix batch rulings (ruling 6 runbook, row 88 measurement)**: runbook committed c5a9912 (journal 300); row 88 design report pending (opus, chase 07:18 CT).
 - **hotfix fix 85**: released 01e7b0c; worktree fix-2026-09-18-orders-intent-index and branch to remove after the judge-after.
 - **phase 6D**: Task 11 merged (283); acceptance rows at game windows, §4 read-backs, item 12 baseline, re-archive and final review, roadmap `done`. Ledger `.superpowers/sdd/2026-09-13-phase6d-sustained-evaluation/progress.md`.
 - **row 86**: argument done; Saturday.
@@ -32,8 +33,8 @@ Updated 2026-09-19 06:41 CT (11:41 UTC Sep 19) by controller session sports-e2 i
 
 ## Pending results
 
-- Agents: none running. Suites: none running.
-- Wakeups (sports-e2, CronList): 7d72d33d Sat 09:01 CT (daily line, full verify with 2b and the walker, judge-after rows).
+- Agents: hotfix batch `.superpowers/sdd/hotfix-2026-09-19-rulings/` (clock 06:44 CT): dispatch 2 row 88 measurement design (opus reader, 06:48 CT, chase 07:18 CT) running; dispatch 3 (runbook re-review) done. Suites: none running.
+- Wakeups (sports-e2, CronList): aae03f46 Sat 07:41 CT (canary read: L1/L2, exec.loop_ms since 06:37 CT vs 113,137 ms p95 before, recorder pair, fix 87 and 6D row 5 judge-after if triggered); 7d72d33d Sat 09:01 CT (daily line, full verify with 2b and the walker, judge-after rows).
 - Receipts: release 01e7b0c (suite 4,533/1 at 01e7b0c match head; `/srv/sports-harness/releases/20260919T113439Z-01e7b0c`); evidence/2026-09-19-deploy-0637-{summary,release}.txt.
 - Fixture grant UPDATE(indisvalid) ON: harness_test_main (+ shards), phase6d_merge_main, phase6d_merge_review, phase6d1_t5_bookhealth (t1_contract revoked); older fix databases: `make testdb-prune`.
 - Worktrees: phase6d1-t5-bookhealth (T5), fix-2026-09-18-orders-intent-index (merged, kept to the release), phase6d-merge-main; Mac-era fix-45/fix-48/recovery and restart-worker-smoke preserved.
@@ -43,7 +44,7 @@ Updated 2026-09-19 06:41 CT (11:41 UTC Sep 19) by controller session sports-e2 i
 
 ## Counters and deadlines
 
-- CT day Sep 19: dispatches 9; Sep 18 closed at 43; units: phase 6D.1 closed at 33 of 80 (15:31 CT Sep 18 to 01:53 CT); failed deploys 0; implementers running 0 of 3.
+- CT day Sep 19: dispatches 12 (hotfix batch rulings: 3 of 12); Sep 18 closed at 43; units: phase 6D.1 closed at 33 of 80 (15:31 CT Sep 18 to 01:53 CT); failed deploys 0; implementers running 0 of 3.
 - Next duties: 09:01 CT verify and daily line; fix 87 judge-after at the first exhausted run; 6D row 4 judge-after Sun 06:37 CT; item 1 (a) is the user's this weekend, decide-by 2026-09-22 stands. Games: NCAAF Sat 10:30 CT first kickoff, 72 games; NFL Sun 12:00 CT (R4: no full deploy inside the window; app-only only with an empty full-trigger diff, which fix 85 defeats).
 
 ## Constraints
