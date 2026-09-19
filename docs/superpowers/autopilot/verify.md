@@ -124,7 +124,7 @@ select year, week, provisional, generated_at from report_runs order by id desc l
 | Skip reasons | a breakdown, not a single reason. `no_book` must not dominate within 3 h of a kickoff. |
 | Orders / intents | see the time-of-day table; every candidate of an exec variant newer than 1 h has an intent or a `skipped` event |
 | Days to budget | the dashboard projection from trailing 7-day growth is above 30 days |
-| Weekly report | `bash -c '/srv/sports-harness/sports-compose run --rm -T app-run report --week 37 --out -' > docs/reports/2026-w37.md` on Omarchy writes tables 1 to 6 and 8 populated, 7/9/10 "not collected" |
+| Weekly report | **Frozen 2026-09-19 (the user's edit, item 1 ruling 2026-09-18 and journal 300's DROP precondition):** the committed `docs/reports/2026-w37.md` (2f0e068, the Mon 2026-09-14 duty) is the w37 record and is never regenerated; its tape partitions are archived and dropped under item 1. The command check runs for the current ISO week to a scratch path, never to a committed report: `bash -c '/srv/sports-harness/sports-compose run --rm -T app-run report --week <current ISO week> --out -' > <scratchpad>/2026-wNN.md` on Omarchy writes tables 1 to 6 and 8 populated, 7/9/10 "not collected". Only the Monday 09:00 CT duty writes `docs/reports/2026-wNN.md`. |
 | `harness gate` | stores one `gate_reports` row per exec variant, all `passed = false`, exactly one with `gate_variant = true` (`sharp_two_sided` after amendment 3) |
 | Settlement job | the newest `settle` row is `ok` and younger than `settle_period_s`; `budget_exhausted = true` on two consecutive rows is a carried fix |
 | Order CLV | > 0 once fills and benchmarks exist; the stale share of `order_clv` per benchmark type in the last 7 days under 20 % |
