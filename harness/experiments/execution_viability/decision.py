@@ -184,6 +184,16 @@ def _require(evidence: Evidence) -> None:
         raise ValueError(
             f"recommendation must be one of {RECOMMENDATIONS} - retain, revise, stop or "
             f"insufficient evidence (U10) - not {evidence.recommendation!r}")
+    # §1.11: *any* production adoption proposal carries all five fields. A proposal that names
+    # four of them is refused rather than printed under a sentence claiming it carries five.
+    proposal = evidence.adoption_proposal.strip().lower()
+    if proposal:
+        absent = [name for name in PROPOSAL_FIELDS if name not in proposal]
+        if absent:
+            raise MissingEvidence(
+                "adoption_proposal is incomplete: §1.11 requires every production adoption "
+                f"proposal to carry {', '.join(PROPOSAL_FIELDS)}, each named in the proposal "
+                f"itself; this one does not name {', '.join(absent)}")
 
 
 def render(evidence: Evidence, *, now: datetime) -> str:
@@ -252,7 +262,8 @@ def render(evidence: Evidence, *, now: datetime) -> str:
         NEGATIVE_FINDING,
         "",
         "Any production adoption proposal carries all five of: "
-        f"{', '.join(PROPOSAL_FIELDS)}.",
+        f"{', '.join(PROPOSAL_FIELDS)}; a proposal that does not name each of them is refused "
+        "here rather than rendered.",
     ]
     if evidence.adoption_proposal.strip():
         out += ["", evidence.adoption_proposal]

@@ -865,7 +865,6 @@ def observe_cmd(run_id: str = typer.Option(..., "--run-id"),
         print(f"  dormant        {run.dormant}; every scheduled-but-unmade read is labelled "
               f"and the run never retries (§1.6i)")
 
-
 #: §1.3(f)'s proof, counted: how many differences between the recorded slice and an arm's
 #: reproduction the run recorded, and how many of them name a cause. One aggregate on
 #: `ix_exp_mismatch_run (run_id, explained)`.
@@ -880,6 +879,8 @@ _DECIDE_LIMITATIONS = text("select kind, count(*) as n from exp_limitation where
 
 #: §1.9(a)'s coverage: matured, censored and missing outcomes for the run, as **counts**. No
 #: value is averaged across two arms here - a pooled markout would answer nobody's question.
+#: This count is **run-wide**; the forecast's maturity figure is one identity's, and each line
+#: names its own scope so the two cannot be read as one number (review Minor 5).
 _DECIDE_OUTCOME_COVERAGE = text(
     "select count(*) as rows_, "
     "count(*) filter (where value is not null and not censored) as matured, "
@@ -919,20 +920,45 @@ _DECIDE_OBSERVED_FILLS = text(
     "where o.variant_id = :v and f.fill_method = 'queue_model' and not f.replay")
 
 #: The window those fills accrued over, and the orders placed in it: the denominator of a rate.
+#:
+#: `and not replay` is not optional (fix round 1, Critical 1). `harness/replay.py` writes replay
+#: orders into this same table on a 15 s grid over historical tape, and the fill half of this
+#: pair already excludes them: without it, one replay of an old window stretches
+#: `max(placed_at) - min(placed_at)`, divides every projected rate by the stretch and inflates
+#: the time-to-target - in the one artifact the user reads. §1.10's first quantity is *live
+#: watched facts*, and both halves now mean the same thing by "observed".
 _DECIDE_OBSERVED_ORDERS = text(
     "select count(*) as orders, min(placed_at) as first_order, max(placed_at) as last_order "
-    "from orders where variant_id = :v")
+    "from orders where variant_id = :v and not replay")
+
+#: §1.10's clean-book eligibility, **measured** (fix round 1, Critical 2): the live watched
+#: filled orders whose fill instant lies in no interval this run classified `data_loss_confirmed`
+#: or `unresolved` for that ticker. `inactive_confirmed` is a quiet market, not a faulted book,
+#: so it does not exclude a fill. Bounded by the variant and by the run's own health rows; asked
+#: only when the run classified something, because "no classification" is *unmeasured* and the
+#: fill count is not a substitute for a measurement.
+_DECIDE_CLEAN_BOOK = text(
+    "select count(distinct o.id) as clean from fills f "
+    "join orders o on o.id = f.order_id "
+    "where o.variant_id = :v and f.fill_method = 'queue_model' and not f.replay "
+    "and not exists (select 1 from exp_book_health h where h.run_id = :r "
+    "and h.ticker = o.ticker "
+    "and h.classification in ('data_loss_confirmed', 'unresolved') "
+    "and f.filled_at >= h.interval_start and f.filled_at < h.interval_end)")
 
 
-def _decide_observed(session, variant_id: str | None, *, mature_outcomes: int,
-                     markout_sign: str | None) -> tuple[forecast.Observed, list[str]]:
+def _decide_observed(session, variant_id: str | None, *, run_id: str, mature_outcomes: int,
+                     markout_sign: str | None,
+                     health_intervals: int) -> tuple[forecast.Observed, list[str]]:
     """§1.10's observed base, read from the live tables, with what it could not read named.
 
-    An unregistered variant is not an empty one: the difference is stated rather than rendered
-    as a zero accrual nobody can tell from a measured zero.
+    An unregistered variant is not an empty one: that branch carries `window_read=False`, so the
+    forecast says the window is unread instead of printing a fabricated one-day window. Clean-book
+    eligibility is measured against the run's own `exp_book_health` intervals, and stays `None`
+    when the run classified nothing.
     """
     if variant_id is None:
-        return (forecast.Observed(days=1.0, mature_outcomes=mature_outcomes,
+        return (forecast.Observed(days=1.0, window_read=False, mature_outcomes=mature_outcomes,
                                   markout_sign=markout_sign),
                 [f"the registered variant {forecast.PROJECTED_VARIANT} is not in "
                  "strategy_variants in this database, so no observed watched fill could be "
@@ -944,47 +970,76 @@ def _decide_observed(session, variant_id: str | None, *, mature_outcomes: int,
             if placed.first_order and placed.last_order else 0.0)
     notes: list[str] = []
     if span <= 0:
-        notes.append("the observed window is shorter than a day (or holds a single order), so "
-                     "the rates above are per day over one day, not a measured daily rate")
+        notes.append("the observed window is shorter than a day (or holds a single live order), "
+                     "so the rates above are per day over one day, not a measured daily rate")
+    clean, source = None, ""
+    if health_intervals:
+        clean = int(session.execute(
+            _DECIDE_CLEAN_BOOK, {"v": variant_id, "r": run_id}).scalar() or 0)
+        source = (f"this run's {health_intervals} exp_book_health intervals (a fill inside a "
+                  "data_loss_confirmed or unresolved interval for its ticker is excluded; an "
+                  "inactive_confirmed interval is a quiet market and excludes nothing)")
+    else:
+        notes.append("clean-book eligibility is unmeasured: this run has no exp_book_health "
+                     "row, and the filled-order count is not a substitute for a classification")
     return (forecast.Observed(
         orders=int(placed.orders or 0), fills=int(fills.filled_orders or 0),
         fill_rows=int(fills.fill_rows or 0), distinct_games=int(fills.distinct_games or 0),
-        days=max(span, 1.0), mature_outcomes=mature_outcomes,
-        markout_sign=markout_sign), notes)
+        days=max(span, 1.0), clean_book_eligible=clean, clean_book_source=source,
+        mature_outcomes=mature_outcomes, markout_sign=markout_sign), notes)
 
 
 @exp_app.command("decide")
 def decide_cmd(run_id: str = typer.Option(..., "--run-id"),
-               veto_profile_name: str = typer.Option(
+               veto_profile_name: str | None = typer.Option(
                    None, "--veto-profile",
-                   help=f"one of {', '.join(pacing.PROFILE_NAMES)}; names the dormant profile "
-                        "this report cites. Turns nothing on."),
-               arm_b_better: bool = typer.Option(
+                   help=f"one of {', '.join(pacing.PROFILE_NAMES)}; the dormant profile this "
+                        "report preflights and cites. Turns nothing on, and is required for a "
+                        "complete veto-pacing section."),
+               since: datetime = typer.Option(None, "--since",
+                                              formats=["%Y-%m-%dT%H:%M:%S%z"]),
+               until: datetime = typer.Option(None, "--until",
+                                              formats=["%Y-%m-%dT%H:%M:%S%z"]),
+               cost_per_pair: float = typer.Option(
+                   0.085, "--cost-per-pair",
+                   help="dollars per paired call in the preflight; the review's measured $0.085"),
+               arm_b_better: bool | None = typer.Option(
                    None, "--arm-b-better/--arm-b-not-better",
-                   help="the A-against-B comparison, when the outcomes are mature enough to "
-                        "support one. Omitted is 'unknown', which on its own can only produce "
-                        "'insufficient evidence'.")) -> None:
+                   help="the operator's A-against-B comparison. Omitted is 'unknown', which on "
+                        "its own can only produce 'insufficient evidence'; nothing here infers "
+                        "it from fill counts.")) -> None:
     """Render §1.11's decision report for one frozen run (§1.10, §1.11, I11, D16).
 
     **Recommends; decides nothing.** No setting is written, no policy is adopted and no
     boundary instant is recorded: production adoption is §0.14a's dated decision and the pacing
     profile's activation is §0.14c's, and both questions are printed here unanswered.
 
-    Every number comes from the record: the run's mismatches and limitations, its arms' order
-    and fill counts, the common outcome schedule's coverage, the book-health classifications,
-    arm C's own `exp_observation` rows, and - for §1.10's observed base - the live watched
-    `queue_model` fills of the registered `sharp_two_sided` variant. An empty `exp_outcome` is
-    reported as an **unavailable** outcome, never as a zero markout (§1.9a).
+    Every number comes from the record: the run's mismatches and limitations, its arms' order and
+    fill counts through T4's own `report.arm_table` (so every exploratory row carries its
+    `exp_label`), the common outcome schedule's coverage, the book-health classifications, arm
+    C's own `exp_observation` rows, the veto profile's preflight against stored arrivals, and -
+    for §1.10's observed base - the live watched, non-replayed `queue_model` fills of the
+    registered `sharp_two_sided` variant. An empty `exp_outcome` is reported as an
+    **unavailable** outcome, never as a zero markout (§1.9a).
+
+    `--veto-profile`, `--since` and `--until` are required for a complete report: §1.11 counts
+    the preflight against stored arrivals under unchanged caps as completion evidence, so
+    without it the veto-pacing section is empty and `decision.render` refuses (I11, D16).
 
     The rendered text is the report 6D.1's evidence is judged on; it is placed under
     `docs/superpowers/autopilot/reports/` from this command's output, never hand-written.
     """
     configure_logging()
-    # §0.6: the label first, after the arguments are validated and before any number.
-    print(EXP_LABEL)
     if veto_profile_name is not None and veto_profile_name not in pacing.PROFILE_NAMES:
         raise typer.BadParameter(
             f"--veto-profile must name one of {', '.join(pacing.PROFILE_NAMES)}")
+    if (since is None) != (until is None):
+        raise typer.BadParameter("--since and --until are given together: the preflight window "
+                                 "is a window")
+    if since is not None and until <= since:
+        raise typer.BadParameter("--until must be after --since")
+    # §0.6: the label first, after the arguments are validated and before any number.
+    print(EXP_LABEL)
     # Imported here rather than at module scope for the reason `exp observe` documents:
     # `observer.py` registers a pass at import and `harness/cli.py` imports this module in
     # every `harness` process (fix round 1, Important 4).
@@ -1018,9 +1073,18 @@ def decide_cmd(run_id: str = typer.Option(..., "--run-id"),
             mean = float(baseline_arm.mean_1800)
             markout_sign = "positive" if mean > 0 else "negative" if mean < 0 else "flat"
         observed, observed_notes = _decide_observed(
-            session, variant_id,
+            session, variant_id, run_id=run_id,
             mature_outcomes=int(baseline_arm.matured) if baseline_arm is not None else 0,
-            markout_sign=markout_sign)
+            markout_sign=markout_sign,
+            health_intervals=sum(int(row.n) for row in health))
+        # §1.8/§1.11's completion evidence: the profile replayed against the arrivals that
+        # actually happened, under the caps that are in force. Read-only, like everything here.
+        preflight = None
+        if veto_profile_name is not None and since is not None:
+            preflight = veto_profile.preflight(
+                session, pacing.load_profile(veto_profile_name), since=since, until=until,
+                now=now, cost_per_pair=Decimal(str(cost_per_pair)),
+                daily_cap=s.veto_daily_usd_cap, weekly_cap=s.veto_weekly_usd_cap)
 
     # §1.3(f): the proof is the mismatch count **and** its resolution, never one of them.
     resolved = int(mismatches.n or 0) == int(mismatches.explained or 0)
@@ -1038,17 +1102,23 @@ def decide_cmd(run_id: str = typer.Option(..., "--run-id"),
     baseline_lines += ([f"limitation: {row.kind} x{row.n}" for row in limitations]
                        or ["limitations: no exp_limitation row for this run."])
 
-    # §1.9(d)'s rows, one per portfolio identity. Not summed (§1.5): two identities are two
-    # lines here, exactly as `report.arm_table` prints them.
-    arm_lines = [f"arm {row.arm_id} / {row.portfolio}: {row.orders} orders, {row.fills} filled, "
-                 f"{row.partial_fills} partially filled, {row.markets} markets, "
-                 f"{row.contracts} contracts, {row.capacity_exclusions} capacity exclusions"
-                 for row in arm_rows] or [
-        "no exp_order row for this run: neither arm produced a comparable result."]
-    arm_lines.append(
-        "no registered variant's recorded performance is in these lines: every one of them is "
-        "exploratory, and `harness exp report --run-id <run>` prints them under §1.9's "
-        "two-table contract with the exp_label on every exploratory cell (§0.10, §1.9e).")
+    # §1.9(d)'s rows through T4's own renderer (fix round 1, Important 1 / Minor 10): one line
+    # per portfolio identity, never a sum (§1.5), and `exp_label` on every exploratory row. Every
+    # row here is exploratory - an arm's counterfactual behaviour is not a registered variant's
+    # performance - so the registered table is not printed at all (§0.10, §1.9e).
+    if arm_rows:
+        arm_results = report.arm_table(
+            [{"arm_id": row.arm_id, "portfolio": row.portfolio, "orders": row.orders,
+              "fills": row.fills, "markets": row.markets, "partial_fills": row.partial_fills,
+              "contracts": row.contracts, "capacity_exclusions": row.capacity_exclusions,
+              "registered": False} for row in arm_rows],
+            run_id=run_id, manifest_hash=run.manifest_hash, exploratory=True)
+    else:
+        arm_results = "no exp_order row for this run: neither arm produced a comparable result."
+    arm_results += (
+        "\n\nNo registered variant's recorded performance is in that table: every row is "
+        "exploratory and carries its exp_label, in the same shape `harness exp report --run-id "
+        "<run>` prints under §1.9's two-table contract (§0.10, §1.9e).")
     arm_ids = {row.arm_id for row in arm_rows}
 
     # Arm C (ruling D27): its rows are `exp_observation` rows with `source = 'exp_observer'`,
@@ -1074,9 +1144,12 @@ def decide_cmd(run_id: str = typer.Option(..., "--run-id"),
         "classifies the intervals and names the cause of each (§1.7)."]
     matured = int(coverage.matured or 0)
     health_lines.append(
-        f"fresh-outcome coverage: {coverage.rows_} outcome rows, {matured} matured, "
-        f"{coverage.censored} censored, {coverage.missing} missing over the common schedule "
-        f"{', '.join(outcomes.HORIZONS)}."
+        f"fresh-outcome coverage, run-wide (every arm and portfolio identity of this run): "
+        f"{coverage.rows_} outcome rows, {matured} matured, {coverage.censored} censored, "
+        f"{coverage.missing} missing over the common schedule "
+        f"{', '.join(outcomes.HORIZONS)}. §5's maturity line counts only the projected "
+        "portfolio identity's baseline arm, so the two figures can differ without either "
+        "being wrong."
         + ("" if coverage.rows_ else " An empty exp_outcome is an unavailable outcome, never a "
                                      "zero markout: nothing has recorded this run's outcomes "
                                      "(§1.9a)."))
@@ -1086,52 +1159,72 @@ def decide_cmd(run_id: str = typer.Option(..., "--run-id"),
     # labelled, and never added to the observed count (§1.10).
     b_row = next((row for row in arm_rows
                   if row.arm_id == "B" and row.portfolio == variant_id), None)
-    a_row = next((row for row in arm_rows
-                  if row.arm_id == "A" and row.portfolio == variant_id), None)
     exploratory = forecast.Exploratory(
         fills=int(b_row.fills) if b_row is not None else 0,
-        orders=int(b_row.orders) if b_row is not None else 0,
-        days=observed.days, label=f"[{exp_label(run_id, 'B', run.manifest_hash)}]",
-        arm_c=arm_c)
+        days=observed.days, label=exp_label(run_id, "B", run.manifest_hash), arm_c=arm_c)
     forecast_text = "\n".join(
-        [forecast.render_forecast(forecast.project(observed, exploratory))]
+        [forecast.render_forecast(forecast.project(
+            observed, exploratory, shared_slots=s.exec_max_open_orders))]
         + [f"  note: {note}" for note in observed_notes])
 
+    # §1.11's veto-pacing evidence. Without the profile **and** its preflight there is no
+    # evidence here, only a sentence, so the section is left empty and `decision.render`
+    # refuses (fix round 1, Important 2).
     veto_lines: list[str] = []
-    if veto_profile_name is None:
-        veto_lines.append(
-            "no profile was named for this render; `harness exp veto-profile --name <name> "
-            "[--preflight --since ... --until ...]` prints the profile, its hash, §0.8's "
-            "amendment record and §0.14c's question.")
-    else:
+    if preflight is not None:
         profile = pacing.load_profile(veto_profile_name)
         veto_lines.append(f"profile {profile.name}, hash {profile.profile_hash()}; §0.8's "
                           f"amendment record is prepared as veto-pacing-"
                           f"{profile.profile_hash()[:12]}, with its boundary fields empty.")
+        veto_lines.append(f"preflight header: {veto_profile.PREFLIGHT_HEADER}.")
+        veto_lines.append(
+            f"preflight window {preflight.since.isoformat()} .. "
+            f"{preflight.until.isoformat()}: {preflight.arrivals} stored arrivals in "
+            f"{preflight.buckets} buckets, {preflight.near_kickoff_buckets} of them inside a "
+            f"window"
+            + ("  (row cap reached)" if preflight.truncated else "") + ".")
+        veto_lines.append(
+            f"preflight funding: {preflight.funded} buckets funded under the profile "
+            f"({preflight.funded_near_kickoff} near-kickoff) against {preflight.funded_today} "
+            f"funded under today's order ({preflight.funded_near_kickoff_today} near-kickoff); "
+            f"{preflight.uncovered} not covered; week total {preflight.week_total} at "
+            f"{preflight.cost_per_pair} a pair.")
+        veto_lines.append(
+            f"caps unchanged: {preflight.daily_cap} USD a day and {preflight.weekly_cap} USD an "
+            "ISO week, enforced by the same atomic reservation; a profile changes only when a "
+            "cap binds.")
+        veto_lines += [f"preflight caveat: {caveat}" for caveat in preflight.caveats]
         veto_lines.append(f"claim order in force today: {veto_profile.CLAIM_ORDER_BEFORE}")
         veto_lines.append("claim order under the profile, not in force: "
                           f"{veto_profile.CLAIM_ORDER_AFTER}")
-    veto_lines.append(
-        f"live setting: veto_pacing_profile={s.veto_pacing_profile!r}; the reservation check is "
-        "a no-op while it is None, and this command writes no setting.")
-    veto_lines.append(
-        f"caps unchanged: {s.veto_daily_usd_cap} USD a day and {s.veto_weekly_usd_cap} USD an "
-        "ISO week, enforced by the same atomic reservation; a profile changes only when a "
-        "cap binds.")
+        veto_lines.append(
+            f"live setting: veto_pacing_profile={s.veto_pacing_profile!r}; the reservation "
+            "check is a no-op while it is None, and this command writes no setting.")
 
-    better = None if arm_b_better is None else bool(arm_b_better)
-    if better is None and a_row is not None and b_row is not None and matured:
-        better = int(b_row.fills) > int(a_row.fills)
+    # Fix round 1, Important 4: `better` is the operator's, or it is unknown. It is never
+    # inferred from fill counts - one extra counterfactual fill is not "arm B is better", and a
+    # headline the user's §0.14a decision rests on may not turn on an inference nobody made.
     recommendation, why = decision.recommend(
         comparable_arms=len(arm_ids),
         accrual_identified=observed.distinct_games >= forecast.IDENTIFIED_MIN_GAMES,
         mature_outcomes=matured, markout_sign=markout_sign, baseline_resolved=resolved,
-        arm_b_better=better)
+        arm_b_better=arm_b_better)
     evidence = decision.Evidence(
         baseline_proof="\n".join(f"- {line}" for line in baseline_lines),
-        arm_results="\n".join(f"- {line}" for line in arm_lines),
+        arm_results=arm_results,
         book_health="\n".join(f"- {line}" for line in health_lines),
         veto_pacing="\n".join(f"- {line}" for line in veto_lines),
         forecast=forecast_text, recommendation=recommendation, arm_c=arm_c, reason=why,
         run_id=run_id, manifest_hash=run.manifest_hash)
-    print(decision.render(evidence, now=now))
+    try:
+        print(decision.render(evidence, now=now))
+    except decision.MissingEvidence as refused:
+        # §1.11's own refusal, reported as a refusal rather than a traceback: the report is not
+        # rendered at all while a required section is empty.
+        print(f"decision report refused: {refused}")
+        if not veto_lines:
+            print("  the veto-pacing section is complete only with --veto-profile, --since and "
+                  "--until: §1.11 counts the preflight against stored arrivals under unchanged "
+                  "caps as completion evidence, and this command will not assert it without "
+                  "reading it (I11, D16)")
+        raise typer.Exit(code=1) from None
