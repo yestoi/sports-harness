@@ -3462,3 +3462,15 @@ User, verbatim (07:19 CT, in chat): "Read /home/trey/dev/sports/.superpowers/sdd
 - Carried forward: none to fixes.md; user-side TODOs unchanged (§4.7, §4.6, §0.14a-c, M20)
 - Anomalies: none. Instruction-like data: none reported by any worker.
 - Next: Orient from the top (deploy gated on item 24); next timed duty Sat 09:00 CT row 86 (the user); wakeup none
+
+## 296. operate - repo bundle to the NAS and main pushed after phase 6D.1 - 2026-09-19 01:56-01:58 CT
+
+- Orient: rule 0 no (6D `in progress` is U8's partial case; 6C stays planned by its own clause); rule 1 no (Open rows 79/86 are the user's, 85/87 ride the gated release; entry 295 is not a FAIL); rule 2 no (release gated, item 24); rule 3 no (the morning-after-game-day verify and the daily line are Sat 09:00 CT duties, none due before then per row 86); rule 4 yes: the "after every phase" bundle and push (R5/U7) last ran 2026-09-14 (journal above), so due after 6D.1.
+- Bundle: `sports-2026-09-19.bundle` (`--all`, verified, 67,987,582 bytes) copied to the NAS at `/volume1/docker/sports-harness/repo-backup/` 01:57 CT; md5 eb3f70be3d6b3ed1394f937a02851a02 identical on both sides. Local copy in the session scratchpad only.
+- Push (U7): `git push origin main` d946b22..a52f755 (102 commits) 01:57 CT. No phase branch to push: phase6d1-execution-viability is deleted after its merge; phase6d-sustained-evaluation, phase46-fun-tickets and phase6c-trustworthy-reports are already on origin at their local tips and 0 ahead of main. No remote created (gate 8 untouched).
+- After the duty, rules 5-6: 4.6 planned but its remaining tasks wait on a watched NFL window (T18b Sunday, then T19); 6C planned, closure via 6D; 6E acceptance is the user's; 6F/7 gated. Nothing ready before Sat 09:00 CT: idle.
+- Anomalies: none. Instruction-like data: none.
+- Dispatches: 0; day 9.
+- Result: done.
+- Carried forward: none.
+- Next: idle; wakeup Sat 09:01 CT (daily line, the morning-after-game-day verify unit for Friday's NCAAF games, row 86 and item 24 are the user's); NCAAF 13:00 CT game window (R4); T18b at the Sunday NFL window.

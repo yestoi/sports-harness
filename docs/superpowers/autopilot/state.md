@@ -1,6 +1,6 @@
 # Autopilot checkpoint
 
-Updated 2026-09-19 01:53 CT (06:53 UTC Sep 19) by controller session sports-e2 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 295. Paper-only. Runtime build: **4066197** (journal 273, app-only 07:23 CT Sep 18; full 747791c Sep 16, app-ws on it). Main is ahead of the runtime by fix 85 (migration 0014, 4d2cdcc), 6D Task 11 (0fe5890) and fix 87 (8681b74): **the release is gated (journal 284)**: app-only refused by classification while fix 85's files sit on main; fix 85 held for Monday's quiet-window full release (ruling 2026-09-18b §1); the user chooses (packet item 24). Rollback: app-only redeploy of 1a12781.
+Updated 2026-09-19 01:58 CT (06:58 UTC Sep 19) by controller session sports-e2 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 296. Paper-only. Runtime build: **4066197** (journal 273, app-only 07:23 CT Sep 18; full 747791c Sep 16, app-ws on it). Main is ahead of the runtime by fix 85 (migration 0014, 4d2cdcc), 6D Task 11 (0fe5890) and fix 87 (8681b74): **the release is gated (journal 284)**: app-only refused by classification while fix 85's files sit on main; fix 85 held for Monday's quiet-window full release (ruling 2026-09-18b §1); the user chooses (packet item 24). Rollback: app-only redeploy of 1a12781.
 
 ## Right now
 
@@ -16,7 +16,7 @@ Updated 2026-09-19 01:53 CT (06:53 UTC Sep 19) by controller session sports-e2 i
 
 ## Order of work
 
-1. Development priority: 6D.1 done (journal 295); Orient from the top (rules 0-6) at the next pass; the release stays gated (item 24).
+1. Development priority: idle (journal 296): 6D.1 done (295), bundle and push done 01:57 CT; next Orient at the Sat 09:01 CT wakeup; the release stays gated (item 24); 4.6 T18b waits on the Sunday NFL window.
 2. Fri 2026-09-18 done: query 4 both halves (Saturday brief); window reads 1 and 2 (journal 293-294: 6B PASS, 6D row 2 FAIL stands on the unreleased row 87, coverage waived, fills AFTER half shows no step-down, no alarm; page_time FAIL on two of four runs at load, ruled a point measurement, flagged to the user). Release per item 24. No open hotfix row is actionable.
 3. Verify after each release: journal 219's deferred rows, items 12/16, rows 49/68, the 6B by-cause row, Watch reads (56, 70); Task 11's and fix 87's judge-after; `exec.phase_place_ms` per `exec.placed` after fix 85.
 4. Operate: storage retention proposal `reports/2026-09-15-storage-retention-proposal.md` (the user decides by 2026-09-22); Friday alias pass done (285), next Monday 09:30 CT; 6D acceptance rows and 4.6 T18b/T19 wait for game windows; usage.py measurement is the user's (247).
@@ -33,10 +33,11 @@ Updated 2026-09-19 01:53 CT (06:53 UTC Sep 19) by controller session sports-e2 i
 ## Pending results
 
 - Agents: 6d1-t5 implementer (opus sports-worker) running since 16:17 CT, report `.superpowers/sdd/results/phase6d1-task-5-report.md`. Suites: none running.
-- Wakeups (sports-e2, CronList): none. No timed duty before Sat 09:00 CT (row 86, the user).
+- Wakeups (sports-e2, CronList): 7d72d33d Sat 09:01 CT (daily line, morning-after verify, row 86/item 24 are the user's). No timed duty before Sat 09:00 CT (row 86, the user).
 - Receipts: fix 87 8681b74 (4,242 passed, tree 395b8a19, merged 12:39 CT, deploy gated); Task 11 0fe5890 (4,237, merged 11:03 CT, gated); fix 85 4d2cdcc (4,231 at e49a988, merged 09:21 CT, pending); fix 79 deployed 4066197 07:23 CT, verify 275 (mechanism PASS, effect FAIL). Preflight evidence/2026-09-18-preflight-1317.txt (290).
 - Fixture grant UPDATE(indisvalid) ON: harness_test_main (+ shards), phase6d_merge_main, phase6d_merge_review, phase6d1_t5_bookhealth (t1_contract revoked); older fix databases: `make testdb-prune`.
 - Worktrees: phase6d1-t5-bookhealth (T5), fix-2026-09-18-orders-intent-index (merged, kept to the release), phase6d-merge-main; Mac-era fix-45/fix-48/recovery and restart-worker-smoke preserved.
+- Off-host copies (journal 296): bundle sports-2026-09-19.bundle on the NAS, origin/main = a52f755.
 - Untracked Graft files `docs/superpowers/.gitignore` and `.ignore` (journal 289): left as is; reconcile ownership before a release (clean porcelain); no block on plan-next.
 - Tooling: run full suites detached (`setsid nohup make test`) when free memory is under ~3 GB (memory note harness-memory-kill-2026-09-18).
 
