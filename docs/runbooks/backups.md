@@ -113,58 +113,143 @@ Between that archive and the RAID, the tape has no other protection.
 
 ## Restore drill (a backup is not done until one has run)
 
-Two halves, both recorded in `backup_runs` with `kind = 'drill'`.
+Two halves, both recorded in `backup_runs` with `kind = 'drill'`. Since the 2026-09-12 cutover
+the stack runs on Omarchy under `/srv/sports-harness`; the NAS is a retired archive destination
+that the archive puller writes to and nothing reads from for a drill. **The drill never runs on
+the NAS and never opens a tunnel to it** (the earlier NAS-half text is superseded; corrected
+2026-09-19 under the user's item 1 ruling, journal 298).
 
-1. **NAS half** (the controller, over ssh, from the stack directory on the NAS host):
+1. **Host half** (the controller, on Omarchy, from the deployed release tree `/srv/sports-harness`,
+   whose `deploy/backup/drill.sh` is the released copy; the plaintext is the host's own copy under
+   `backups/nightly/` or `backups/partitions/` there):
 
    ```sh
-   ssh $NAS_USER@$NAS_IP 'cd $NAS_STACK && deploy/backup/drill.sh backups/nightly/<file>.dump'
+   bash -c 'cd /srv/sports-harness && deploy/backup/drill.sh backups/partitions/<file>.dump'
    ```
 
-   **Not** `docker compose exec app-backup /backup/drill.sh`. The sidecar has no docker socket,
-   and the script runs `docker run`, `docker compose exec` and `docker cp` itself: it is a host
-   script that happens to live beside the sidecar's two, and its own header says so.
-
-   It starts a throwaway `postgres:16` container (`docker run --rm`, an anonymous volume that
-   disappears with it), restores the plaintext there, counts rows per non-bulk table in both it
-   and `harness` (read-only), prints the comparison and a final `ROWS_MATCH true|false`, then
-   stops the container. Nothing on the production cluster is created, dropped or written.
+   **Not** `sports-compose exec app-backup /backup/drill.sh`. The sidecar has no docker socket,
+   and the script runs `docker run` and `docker cp` itself: it is a host script that happens to
+   live beside the sidecar's two, and its own header says so. It reads the `.meta.json` beside
+   the dump, starts a throwaway `postgres:16` container (`docker run --rm`, an anonymous volume
+   that disappears with it), restores the plaintext there, and stops the container. The
+   production cluster is not read, created, dropped or written.
 
    **Read the output, not the exit status.** The script exits 0 on
-   `SKIP drill free=<n>% below MIN_FREE_PCT=30%`, and it exits 0 on `ROWS_MATCH false` as well:
-   the verdict is deliberately the printed line, because a dump is a point-in-time snapshot and
-   a row count that has moved since is not by itself a failed restore. A drill is passed when a
-   `backup_runs` row with `kind = 'drill'` and `rows_match = true` exists — never because the
-   command returned 0. A skipped drill is not a passed drill.
-2. **Mac half:** `scp` one nightly `.age` file over, then
-   `harness backup-decrypt <file>.age --out /tmp/restore.dump`.
-   The printed sha256 must equal that unit's `backup_runs.plaintext_sha256`. Record it:
-   `harness backup-drill-record --build-sha <sha> --decrypt-ok --plaintext-sha256 <sha256> --rows-match`
+   `SKIP drill free=<n>% below MIN_FREE_PCT=30%` (it measures the dump's own filesystem: on
+   Omarchy `/srv/sports-harness` is the `@sports` Btrfs subvolume, whose `df` reads the shared pool), it exits 0 on `ROWS_MATCH false`, and it exits 0 on a
+   partition unit's `ROWS_MATCH n/a`. The verdict is the printed line:
+   - `RESTORE_OK <file>` is the restore proof and the only line a drill row may be written on.
+     A skipped drill is not a passed drill.
+   - A **nightly** unit carries dump-time counts in its `.meta.json`, so it also prints
+     `COMPARED n MISMATCHES n NO_COUNT n` and `ROWS_MATCH true|false`; a nightly drill is passed
+     when `RESTORE_OK` printed and `ROWS_MATCH true` printed.
+   - A **partition** unit (`harness-partitions-<table>_y<year>w<week>-…`) takes no dump-time
+     counts (`counts_snapshot=none`), prints `COMPARED 0 MISMATCHES 0 NO_COUNT 0` and
+     `ROWS_MATCH n/a` by design, and can never record `rows_match = true`. Its pass is
+     `RESTORE_OK` (the user's ruling of 2026-09-18, item 1) **plus** the live-versus-restored
+     comparison below, because the archive carries no row count at all.
+2. **Mac half** (the user; the age private key lives only there): pull the unit's `.dump.age`
+   from the NAS archive (`/volume1/docker/sports-archive/encrypted/partitions/` for partition
+   units, `…/nightly/` for nightlies), then `harness backup-decrypt <file>.age --out
+   /tmp/restore.dump`. The printed sha256 must equal that unit's `backup_runs.plaintext_sha256`
+   (also in the `.meta.json` beside it). This proves the *ciphertext* restores; the host half
+   proves the plaintext does.
 
-   `backup-drill-record` writes to the harness database, which lives on the NAS, and
-   `docker-compose.yml` publishes no host port for `postgres` — pointing at `127.0.0.1:5432` on
-   the NAS host reaches nothing, so the tunnel has to target the container itself. Open one in
-   another shell: `ssh $NAS_USER@$NAS_IP 'cd $NAS_STACK && docker compose exec -T postgres
-   hostname -i'` to read the container's address, then
-   `ssh -N -L 5432:<that address>:5432 $NAS_USER@$NAS_IP`. With the tunnel open, run the record
-   command as `DATABASE_URL=postgresql+psycopg://harness:harness@127.0.0.1:5432/harness harness
-   backup-drill-record ...`. The row must land in the NAS database or the release rule
-   (`backup-encrypt`'s plaintext deletion) never sees it — a drill recorded against a local
-   database is a drill that never happened as far as retention is concerned.
+### Recording the drill (host, no tunnel)
+
+`backup-drill-record` writes to the harness database, which is local on Omarchy: run it inside
+the stack, never against a scratch database (a drill recorded elsewhere is a drill that never
+happened as far as retention is concerned):
+
+```sh
+/srv/sports-harness/sports-compose run --rm -T app-run backup-drill-record \
+  --build-sha <encrypt row's build_sha> --decrypt-ok --plaintext-sha256 <sha256 from the Mac half>
+```
+
+Add `--rows-match` only for a nightly unit whose host half printed `ROWS_MATCH true`; for a
+partition unit pass neither `--rows-match` nor `--no-rows-match` (the column stays null, which
+is the honest record of `ROWS_MATCH n/a`).
+
+The build sha is the **encrypt row's own** build, not the sha deployed today: the release rule
+(`delete_verified_plaintexts`, `harness/ops/backup.py`) deletes a unit's plaintext only when a
+`drill` row with `decrypt_ok = true` exists for the `build_sha` of that unit's own `encrypt`
+row, so a drill recorded against a different build releases nothing and leaves the plaintexts
+on the host indefinitely (nightly pruning stalls on unreleased plaintexts). Read it back before
+recording:
+
+```sh
+/srv/sports-harness/sports-compose exec -T postgres psql -X -U harness -d harness -At -F " | " <<'SQL'
+select id, kind, build_sha, path, plaintext_sha256 from backup_runs
+  where kind = 'encrypt' and status = 'ok' order by id desc limit 8;
+SQL
+```
+
+Worked example: the two w37 partition units were encrypted 2026-09-14 under build `ca30ed1`
+(`backup_runs` 44 and 45), so their drill row is recorded with `--build-sha ca30ed1`, whatever
+build is running when the drill runs.
+
+### Partition units: the live-versus-restored comparison
+
+`drill.sh` removes its throwaway container before it returns, so the comparison is a separate,
+read-only step run right after `RESTORE_OK`, once per partition unit, and journaled beside the
+drill row:
+
+```sh
+CID=$(docker run --rm -d -e POSTGRES_PASSWORD="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')" \
+      -e POSTGRES_USER=drill -e POSTGRES_DB=drill postgres:16)
+until docker exec "$CID" pg_isready -U drill -d drill >/dev/null 2>&1; do sleep 2; done
+docker cp /srv/sports-harness/backups/partitions/<file>.dump "$CID:/tmp/drill.dump"
+docker exec "$CID" pg_restore --no-owner --no-privileges -U drill -d drill /tmp/drill.dump
+docker exec "$CID" psql -U drill -d drill -At -c "select count(*), min(ts), max(ts), max(id) from <table>_y<year>w<week>"
+docker stop "$CID" >/dev/null   # --rm removes the container and its anonymous volume
+```
+
+(the same throwaway recipe `drill.sh` uses: a random password, an anonymous volume, nothing on
+the production cluster)
+
+against the same four numbers from the live partition:
+
+```sh
+/srv/sports-harness/sports-compose exec -T postgres psql -X -U harness -d harness -At \
+  -c "select count(*), min(ts), max(ts), max(id) from <table>_y<year>w<week>"
+```
+
+A sealed partition no longer receives rows, so all four must be **equal**; any difference is
+an integrity anomaly (the archive or the partition changed after sealing) and stops the
+retention step for that unit.
+
+### Before any partition DROP (item 1, option 1: DETACH then DROP, one partition per quiet hour)
+
+The procedure itself is the user's (`docs/superpowers/autopilot/reports/2026-09-15-storage-retention-proposal.md`; `lock_timeout = '5s'`,
+`venue_trades_y2026w37` first as the rehearsal, then `orderbook_events_y2026w37`, midweek). Two
+preconditions the ruling did not list, both checked before **each** DROP:
+
+1. **No live cursor points into the partition.** `Order.tape_cursor_event_id` and
+   `Order.nw_tape_cursor_event_id` are `orderbook_events` ids; `_sim_book`
+   (`harness/execution/loop.py`, the historical branch) falls back to the current book
+   **silently** when the cursor's event row is gone, so a dropped partition would change
+   counterfactual values without an error. Read-only, must return 0:
+
+   ```sh
+   /srv/sports-harness/sports-compose exec -T postgres psql -X -U harness -d harness -At <<'SQL'
+   with p as (select min(id) lo, max(id) hi from orderbook_events_y<year>w<week>)
+   select count(*) from orders, p
+     where tape_cursor_event_id between p.lo and p.hi
+        or nw_tape_cursor_event_id between p.lo and p.hi;
+   SQL
+   ```
+
+   A non-zero count is a stop: those orders' tracks must be closed or re-anchored (a ruling)
+   before the partition can go.
+2. **The weekly report row would blank the committed report.** `verify.md`'s Weekly report row
+   (Layer 2, run on every verify) regenerates `docs/reports/2026-w37.md` with `report --week 37`; after
+   the w37 partitions are dropped it would silently overwrite the committed report with empty
+   tape tables. That row must be frozen or re-pointed to the committed file **before** the
+   first w37 DROP. `verify.md` is edited only through a plan's last task or by the user, so
+   this precondition is the user's or a plan's, not the retention step's.
 
 Only after a `drill` row with `decrypt_ok = true` for the same build sha exists does
 `backup-encrypt` delete that build's plaintexts. Until then they stay, bounded by retention.
-
-The build sha is the **encrypt row's own** build, not the sha deployed today: the release rule
-keys on `backup_runs.build_sha`, so a drill recorded against a different build releases nothing.
-Read it back before recording:
-
-```sh
-ssh $NAS_USER@$NAS_IP 'cd $NAS_STACK && docker compose exec -T postgres psql -U harness -d harness -At -F " | "' <<'SQL'
-select id, kind, build_sha, path, plaintext_sha256 from backup_runs
-  where kind = 'encrypt' order by id desc limit 5;
-SQL
-```
 
 ## The key
 
