@@ -1,10 +1,10 @@
 # Autopilot checkpoint
 
-Updated 2026-09-19 08:33 CT (13:33 UTC Sep 19) by controller session sports-e2 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 305. Paper-only. Runtime build: **01e7b0c** (journal 299, full release 06:37 CT Sep 19: fix 85 index 0014, 6D Task 11, fix 87, 6D.1 schema 0015). Main is 0234b1c plus journal commits (runtime 01e7b0c plus docs only: no deploy trigger). Rollback (ruling 3, journal 298): on executor/recorder down or app-serve unhealthy the user stamps alembic back to 0013 by hand, then the loop redeploys 4066197 in full; a subtle defect waits for the Sunday gap or Monday.
+Updated 2026-09-19 08:35 CT (13:35 UTC Sep 19) by controller session sports-e2 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 306. Paper-only. Runtime build: **01e7b0c** (journal 299, full release 06:37 CT Sep 19: fix 85 index 0014, 6D Task 11, fix 87, 6D.1 schema 0015). Main is 0234b1c plus journal commits (runtime 01e7b0c plus docs only: no deploy trigger). Rollback (ruling 3, journal 298): on executor/recorder down or app-serve unhealthy the user stamps alembic back to 0013 by hand, then the loop redeploys 4066197 in full; a subtle defect waits for the Sunday gap or Monday.
 
 ## Right now
 
-- **Released 01e7b0c 06:37 CT (journal 299)**: healthy, stamp verified, summary 9/9, indexes valid, alembic 0015; judge-after: fix 87 (first exhausted run), 6D row 5 (first daytime priced tick), row 4 (Sun 06:37 CT), row 8 (10:30 CT slate); Layer 2b and the walker at 09:01 CT. Rulings 4-5 applied (rows 86 Watch, 79 Closed, 88 Open); ruling 6's runbook correction committed c5a9912 (300); §4.7 parts A and B done by the user 08:24 CT and the weekly-report row frozen 0234b1c (304, relay verified); app-research recreated 08:25 CT (expected at 09:01, not an incident); the 6D.1 privilege-pair rows are judgeable now. Item 1 (a) stays the user's.
+- **Released 01e7b0c 06:37 CT (journal 299)**: healthy, stamp verified, summary 9/9, indexes valid, alembic 0015; judge-after: fix 87 (first exhausted run), 6D row 5 (first daytime priced tick), row 4 (Sun 06:37 CT), row 8 (10:30 CT slate); Layer 2b and the walker at 09:01 CT. Rulings 4-5 applied (rows 86 Watch, 79 Closed, 88 Open); ruling 6's runbook correction committed c5a9912 (300); §4.7 parts A and B done by the user 08:24 CT and the weekly-report row frozen 0234b1c (304, relay verified; the user confirmed it 306); app-research recreated 08:25 CT (expected at 09:01, not an incident); the 6D.1 privilege-pair rows are judgeable now. Item 1 (a) stays the user's.
 - **6D.1 done (295)**: archive docs/superpowers/reviews/2026-09-19-phase6d1-*; user-side §4.7, §4.6, §0.14a-c, M20; spec defects in 295.
 - **Fix 87 (287)** released; judge-after: 6D row 2 reads 0 on the first `budget_exhausted` run after 06:37 CT. **Task 11 (283)** released; judge-after SQL (plan step 3).
 - **Fix 85 (282)**: released, `ix_orders_intent` valid; judge `exec.phase_place_ms` per `exec.placed` at the next placements.
@@ -38,7 +38,6 @@ Updated 2026-09-19 08:33 CT (13:33 UTC Sep 19) by controller session sports-e2 i
 - Fixture grant UPDATE(indisvalid) ON: harness_test_main (+ shards), phase6d_merge_main, phase6d_merge_review, phase6d1_t5_bookhealth (t1_contract revoked); older fix databases: `make testdb-prune`.
 - Worktrees: phase6d1-t5-bookhealth (T5), fix-2026-09-18-orders-intent-index (merged, kept to the release), phase6d-merge-main; Mac-era fix-45/fix-48/recovery and restart-worker-smoke preserved.
 - Off-host copies (journal 296): bundle sports-2026-09-19.bundle on the NAS, origin/main = a52f755.
-- Untracked Graft files `docs/superpowers/.gitignore` and `.ignore` (journal 289): left as is; reconcile ownership before a release (clean porcelain); no block on plan-next.
 - Tooling: run full suites detached (`setsid nohup make test`) when free memory is under ~3 GB (memory note harness-memory-kill-2026-09-18).
 
 ## Counters and deadlines

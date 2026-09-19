@@ -3583,3 +3583,11 @@ User, verbatim (07:19 CT, in chat): "Read /home/trey/dev/sports/.superpowers/sdd
 - Dispatches: 0 (batch 4 of 12; day 13).
 - Result: PASS.
 - Next: 09:01 CT full verify and daily line; row 89 implementer (chase 09:08 CT).
+
+## 306. decision - the user confirms the sports-a0 relay - 2026-09-19 08:28 CT
+
+- User, verbatim, 08:28 CT in this chat: "Relay was from me".
+- Effect: journal 304's relayed facts (§4.7 parts A and B done 08:24 CT, the Weekly report row frozen 0234b1c, app-research recreated 08:25 CT, item 1 (a), §4.6, §0.14a-c, M20 and M13 still the user's) are the user's own record; the loop had already verified them read-only and changed nothing by this confirmation.
+- Dispatches: 0.
+- Result: PASS.
+- Next: 09:01 CT full verify and daily line (7d72d33d); row 89 implementer (chase 09:08 CT).
