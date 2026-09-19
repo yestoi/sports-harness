@@ -31,8 +31,12 @@ file only inside `Settings.exp_database_url()` to build the connection string, a
 
 ## 2. The grant
 
-Run once by the user against the `harness` database as its owner role (psql, on the host). The
-`harness` application role cannot create a role, which is why this step is the user's:
+Run once by the user against the `harness` database as its owner role (psql, on the host). On
+Omarchy the `harness` owner role is a superuser (`pg_roles.rolsuper = t`), so it can create the role;
+the step is the user's because creating a role and granting privileges is a user action (invariant 5),
+not because the owner lacks the attribute. The experiment's isolation rests on `harness_exp` itself
+(LOGIN, no superuser, INSERT on exactly the eleven `exp_*` tables) and on `harness exp isolation-check`,
+never on what the owner role can do:
 
 ```sql
 CREATE ROLE harness_exp LOGIN PASSWORD '<the value in secrets/exp_db_password>';

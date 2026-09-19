@@ -3573,3 +3573,13 @@ User, verbatim (07:19 CT, in chat): "Read /home/trey/dev/sports/.superpowers/sdd
 - Dispatches: 0.
 - Result: PASS.
 - Next: 09:01 CT full verify and daily line (7d72d33d); row 89 implementer (chase 09:08 CT); fix row 90 with the next docs commit.
+
+## 305. hotfix - fix row 90: experiments runbook §2 owner-role sentence corrected - 2026-09-19 08:31-08:33 CT
+
+- Orient: hotfix (row 90 Open, docs only; batch `.superpowers/sdd/hotfix-2026-09-19-rulings/`).
+- Change: `docs/runbooks/experiments.md` §2 no longer says the `harness` owner role cannot create a role; it now states that on Omarchy the owner is a superuser, that the step is the user's by invariant 5, and that isolation rests on `harness_exp` (no superuser, INSERT on the eleven `exp_*` tables) and `harness exp isolation-check`. Controller-authored, six lines, verified against `pg_roles` at 08:26 CT (journal 304).
+- Ruling: no reviewer for a six-line factual docs correction whose facts were read from `pg_roles` in the same hour - cost if wrong: a sentence the next reader corrects.
+- Fix rows: row 90 Open to Closed in this commit.
+- Dispatches: 0 (batch 4 of 12; day 13).
+- Result: PASS.
+- Next: 09:01 CT full verify and daily line; row 89 implementer (chase 09:08 CT).

@@ -1,6 +1,6 @@
 # Autopilot checkpoint
 
-Updated 2026-09-19 08:30 CT (13:30 UTC Sep 19) by controller session sports-e2 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 304. Paper-only. Runtime build: **01e7b0c** (journal 299, full release 06:37 CT Sep 19: fix 85 index 0014, 6D Task 11, fix 87, 6D.1 schema 0015). Main is 0234b1c plus journal commits (runtime 01e7b0c plus docs only: no deploy trigger). Rollback (ruling 3, journal 298): on executor/recorder down or app-serve unhealthy the user stamps alembic back to 0013 by hand, then the loop redeploys 4066197 in full; a subtle defect waits for the Sunday gap or Monday.
+Updated 2026-09-19 08:33 CT (13:33 UTC Sep 19) by controller session sports-e2 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 305. Paper-only. Runtime build: **01e7b0c** (journal 299, full release 06:37 CT Sep 19: fix 85 index 0014, 6D Task 11, fix 87, 6D.1 schema 0015). Main is 0234b1c plus journal commits (runtime 01e7b0c plus docs only: no deploy trigger). Rollback (ruling 3, journal 298): on executor/recorder down or app-serve unhealthy the user stamps alembic back to 0013 by hand, then the loop redeploys 4066197 in full; a subtle defect waits for the Sunday gap or Monday.
 
 ## Right now
 
@@ -12,7 +12,7 @@ Updated 2026-09-19 08:30 CT (13:30 UTC Sep 19) by controller session sports-e2 i
 - **A fills step-down at a release hour is an alarm to the user** (275).
 - **Daily line (279)**: spend $24.56 of $25 (veto dormant tonight); db 150 GB at 13:23 CT; app-exec RSS 5.7 GiB (row 83 Watch).
 - **User decisions open**: items 11-15, the Graft concept-layer offer (286); item 1 execution is the user's (a) on the Mac this weekend, the loop's runbook correction first (ruling 6). Packet `reports/2026-09-15-open-decisions-packet.md`.
-- **Fix rows**: Open 5 (85 and 87 released, judge-after; 88 behind 89; 89 L12; 90 docs), Watch 15, Closed 53.
+- **Fix rows**: Open 4 (85 and 87 released, judge-after; 88 behind 89; 89 L12), Watch 15, Closed 54.
 
 ## Order of work
 
