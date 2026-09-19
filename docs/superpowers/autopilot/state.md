@@ -1,27 +1,27 @@
 # Autopilot checkpoint
 
-Updated 2026-09-19 09:33 CT (14:33 UTC Sep 19) by controller session sports-e2 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 309. Paper-only. Runtime build: **01e7b0c** (journal 299, full release 06:37 CT Sep 19: fix 85 index 0014, 6D Task 11, fix 87, 6D.1 schema 0015). Main is docs-only ahead (no deploy trigger). Rollback (ruling 3, 298): on executor/recorder down or app-serve unhealthy the user stamps alembic to 0013 by hand, then the loop redeploys 4066197 in full.
+Updated 2026-09-19 09:50 CT (14:50 UTC Sep 19) by controller session sports-e2 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 310. Paper-only. Runtime build: **01e7b0c** (journal 299, full release 06:37 CT Sep 19: fix 85 index 0014, 6D Task 11, fix 87, 6D.1 schema 0015). Main is docs-only ahead (no deploy trigger). Rollback (ruling 3, 298): on executor/recorder down or app-serve unhealthy the user stamps alembic to 0013 by hand, then the loop redeploys 4066197 in full.
 
 ## Right now
 
 - **Verify 307 (08:54-09:17 CT) FAIL** on rows 91 (Floor self-guard tripped Fri 20:09 CT; 2,564 ms builds before any kickoff, so the 10:30 CT slate trips it again) and 92 (weekend weather starves: 120 s cadence from kickoff - 3 h, weather only on 300/900). Row 93 cosmetic. **Row 92 in Watch (309): the user rules between (a) weather on 120 s under an hourly stamp and (b) a weekend waiver; roadmap User-side TODOs.** Rows 91/93 are the dashboard batch (implementer since 09:24 CT). Fix 85 PASS (place p95 854 to 76 ms), fix 87 PASS. Money fills 0 since the release and 0 the day before; journal 303's "fills 4" were `no_watcher` counterfactuals (corrected in 307).
 - **Daily line 308**: spend $24.56 of $25 today, $146.82 of $150 ISO week (veto dormant); db 170 GB, +21 GB in a day (28 days to ceiling); free 759 GB; credits 4,816,823; kill switch inactive.
-- **Row 89 (302)**: implementer fix round 1 running (review 08:48 CT: fairness test trivial, `residual_deferred` key dropped by ruling, no test); branch d6f2920 base suite 4,535/1/0 at 08:53 CT; release Sunday's gap or Monday at the earliest. **Row 88** Open behind 89.
+- **Row 89 (310)**: done to merge at 45625a7 (re-review APPROVED, suite 4,536/1/0); merge held until the dashboard app-only release has shipped or Sunday's gap opens (an app-only release restarts app-exec); release in Sunday's gap. **Row 88** Open behind 89.
 - **Standing**: fills step-down at a release hour is an alarm (275); no value-path release before Sunday's gap (02:00-10:05 CT) or Monday (272, 298); no deploy inside R4 (Sat 10:15 CT to the last NCAAF game; Sun from 12:00 CT); rows 91/93 dashboard-only.
 - **User decisions open**: items 11-15, the Graft offer (286); item 1 (a) on the Mac this weekend; storage retention by 2026-09-22 (`reports/2026-09-15-storage-retention-proposal.md`; ~20 days of headroom at the weekend rate); packet `reports/2026-09-15-open-decisions-packet.md`.
-- **Fix rows**: Open 6 (85 and 87 judged PASS, to close at the next fixes pass; 88 behind 89; 89 L12 round 1 reported DONE 09:27 CT; 91 and 93 in the dashboard batch), Watch 16 (92 awaits the user), Closed 54.
+- **Fix rows**: Open 6 (85 and 87 judged PASS, to close at the next fixes pass; 88 behind 89; 89 done to merge, held; 91 and 93 in the dashboard batch), Watch 16 (92 awaits the user), Closed 54.
 
 ## Order of work
 
 1. Dashboard batch rows 91/93 (ledger `.superpowers/sdd/hotfix-2026-09-19-dashboard/`): on the report, commit the diff on the branch, sonnet review, fix rounds, full suite on the branch db, ff-merge, app-only release after the last NCAAF game tonight or in Sunday's gap. Row 92 waits on the user's ruling (nothing to build). Implementers 2 of 3 (rows 89 and 91/93).
-2. Row 89: on the round-1 report, commit the diff on `fix-2026-09-19-residual-rotation`, scoped re-review (sonnet), full suite on the branch db, fast-forward to main, remove the worktree/branch, revoke the grant; then re-run row 88 Q1-Q3, Q9, Q5.
+2. Row 89: fast-forward 45625a7 to main after the dashboard release ships (or at Sunday's gap), remove the worktree/branch, revoke the grant; release in the gap; then re-run row 88 Q1-Q3, Q9, Q5.
 3. 11:37 CT window read (cron b3988ec7): 6D rows 5/8, 6B §3 rows, floor self-guard events since 10:15 CT, fills step-down check, exec/recorder health (recorder tick p95 139.6 s on the Saturday cadence is the watch item); no deploy in the window.
 4. Verify after each release: journal 219's deferred rows, items 12/16, rows 49/68, the 6B by-cause row, Watch reads (56, 70); 6D row 4 Sun 06:37 CT.
 5. Operate: Monday 09:30 CT alias pass; 6D acceptance rows and 4.6 T18b/T19 at game windows; usage.py measurement is the user's (247).
 
 ## Active units
 
-- **hotfix row 89** (ledger `.superpowers/sdd/hotfix-2026-09-19-row89/progress.md`, clock 07:38 CT, ceiling 10:38 CT, batch 2 of 12): implementer af714498bd7b28c8f in fix round 1 (SendMessage 08:49 CT, chase 10:19 CT, report `.superpowers/sdd/results/row89-report-r1.md`); branch d6f2920 in worktree `../sports-wt/fix-2026-09-19-residual-rotation`; controller suite at d6f2920 4,535 passed / 1 skipped (874 s, log scratchpad/suite-fix89-d6f2920.log).
+- **hotfix row 89**: done to merge at 45625a7 (310); batch closed 09:48 CT at 3 of 12; merge held (see Right now); worktree ../sports-wt/fix-2026-09-19-residual-rotation kept until the merge.
 - **hotfix dashboard batch (rows 91, 93)**: implementer a47c61755e582765b (sonnet) dispatched 09:24 CT, chase 10:54 CT, report `.superpowers/sdd/results/dashboard-floor-report.md`; branch fix-2026-09-19-dashboard-floor at c00250e; batch clock 09:24 CT, ceiling 12:24 CT, 1 dispatch of 12. In-window floor timing measurement armed 10:50 CT (scratchpad/floor-timing2.py).
 - **verify 307**: closed 09:17 CT at 1 dispatch of 3 (walker done, report `.superpowers/sdd/results/verify-01e7b0c-walkthrough.md`).
 - **hotfix fix 85**: released 01e7b0c and judged PASS; worktree fix-2026-09-18-orders-intent-index and branch to remove.
@@ -32,17 +32,17 @@ Updated 2026-09-19 09:33 CT (14:33 UTC Sep 19) by controller session sports-e2 i
 
 ## Pending results
 
-- Agents: row 89 round 1 committed 45625a7, scoped re-review (sonnet) dispatched 09:33 CT (chase 10:03 CT), full suite on the branch db started 09:26 CT (log scratchpad/suite-fix89-r1.log); dashboard implementer (sonnet, 09:24 CT, chase 10:54 CT). Walker a14860c2b2e70765a reported 09:08 CT.
+- Agents: row 89 batch closed (310); dashboard implementer (sonnet, 09:24 CT, chase 10:54 CT). Walker a14860c2b2e70765a reported 09:08 CT.
 - Wakeups (sports-e2, CronList): 7d72d33d fired 09:01 CT (done: 307/308); af62388a one-shot 10:50 CT (floor timing in the slate); b3988ec7 Sat 11:37 CT (NCAAF window read).
 - Receipts: release 01e7b0c (suite 4,533/1 at 01e7b0c; `/srv/sports-harness/releases/20260919T113439Z-01e7b0c`); evidence/2026-09-19-deploy-0637-{summary,release}.txt; verify evidence/2026-09-19-verify-0854-*.
 - Fixture grant UPDATE(indisvalid) ON: harness_test_main (+ shards), phase6d_merge_main, phase6d_merge_review, phase6d1_t5_bookhealth, fix_2026_09_19_residual_rotation, fix_2026_09_19_dashboard_floor; older fix databases: `make testdb-prune`.
-- Worktrees: fix-2026-09-19-dashboard-floor (rows 91/93), fix-2026-09-19-residual-rotation (row 89), phase6d1-t5-bookhealth (T5), fix-2026-09-18-orders-intent-index (merged, to remove), phase6d-merge-main; Mac-era worktrees preserved.
+- Worktrees: fix-2026-09-19-dashboard-floor (rows 91/93), fix-2026-09-19-residual-rotation (row 89, merge held), phase6d-merge-main; Mac-era worktrees preserved.
 - Off-host copies (296): NAS bundle sports-2026-09-19.bundle, origin/main a52f755.
 - Tooling: full suites detached (`setsid nohup make test`); verify and timing scripts in this session's scratchpad, not committed.
 
 ## Counters and deadlines
 
-- CT day Sep 19: dispatches 16 (rulings batch closed at 4; row 89 batch 2 of 12; verify 307 closed at 1 of 3; dashboard batch 1 of 12); Sep 18 closed at 43; failed deploys 0; same verify item failing twice running: none (rows 91/92 first seen 307); implementers running 2 of 3.
+- CT day Sep 19: dispatches 17 (rulings batch closed at 4; row 89 batch closed at 3; verify 307 closed at 1 of 3; dashboard batch 1 of 12); Sep 18 closed at 43; failed deploys 0; same verify item failing twice running: none (rows 91/92 first seen 307); implementers running 1 of 3.
 - Next duties: 11:37 CT window read; fix 85/87 row closure at the next fixes pass; 6D row 4 judge-after Sun 06:37 CT; Monday 09:00 CT weekly report and 09:30 CT alias pass; item 1 (a) is the user's this weekend; decide-by 2026-09-22 stands. Games: NCAAF Sat 10:30 CT first kickoff, 72 games; NFL Sun 12:00 CT.
 
 ## Constraints

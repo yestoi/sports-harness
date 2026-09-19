@@ -3627,3 +3627,15 @@ User, verbatim (07:19 CT, in chat): "Read /home/trey/dev/sports/.superpowers/sdd
 - Evidence for the brief (production, 09:19-09:23 CT): `build_floor` timed per section, 623 / 543 ms with `details` 461 / 437 (54 detail games of 60; `_detail_set`'s docstring expects about twenty), `funnel` 106 / 76; a cold run 2,370 ms with `_BOARD` alone 1,767 ms (7 ms warm); Friday's three-game `_DETAIL_SIGNALS` aggregate re-run 38 ms warm (35,168 rows, 168 groups), so the in-progress cost is not attributed yet. Hourly floor p95: Fri 17 CT 1,935, 18 CT 3,721, 19 CT 3,925 (max 11,773), 20 CT 5,550 with three games; Sat 09 CT 1,904 with none. Design: per-section and per-statement timings in `readings`, `DETAIL_GAMES_MAX` 24 by priority (in progress, carrying an order, nearest kickoff); no threshold, cadence, statement or schema change. In-window per-statement measurement armed for 10:50 CT (one-shot cron af62388a).
 - Anomalies: none.
 - Next: row 89's round-1 report (landed 09:27 CT: DONE) to commit and re-review; 10:50 CT measurement; 10:54 CT chase of the dashboard implementer; 11:37 CT window read.
+
+## 310. hotfix - row 89 (L12) done to merge at 45625a7; merge held for the gap - 2026-09-19 09:27-09:48 CT
+
+- Orient: rule 1 - row 89's fix round 1 reported DONE 09:27 CT (ledger .superpowers/sdd/hotfix-2026-09-19-row89/progress.md).
+- Branch / commits: fix-2026-09-19-residual-rotation: d6f2920 (round 0) + 45625a7 (round 1: fairness test on a row-88 ratchet fixture whose poison delta keeps every row PER_ROW_BOOK_QUERY, a pre-fix control test asserting the lowest id four times, `residual_deferred` removed per the 08:48 CT ruling).
+- Result: done to merge. Batch closed at 3 dispatches of 12 (07:38-09:48 CT, 2 h 10 min).
+- Dispatches: 1 this entry (scoped re-review, sonnet); 3 for the batch.
+- Tests: controller full suite at 45625a7 on the branch db 4,536 passed / 1 skipped / 0 failed (exit 0, 09:26-09:41 CT); worker scoped 7/7.
+- Review: round 0 SPEC FAIL (1C/1I/1M, 08:48 CT); round 1 re-review APPROVED, no new findings (results/row89-rereview-r1.md: C addressed by the ratchet fixture and control, I and M by removal).
+- Deploy: none. Ruling: the fast-forward merge to main waits until the dashboard batch has shipped its app-only release tonight or Sunday's gap opens, whichever first: an app-only release restarts app-exec, and row 89 on main would ride along as a value-path change before the gap (272, 298). Cost if wrong: hours on a branch.
+- Anomalies: none.
+- Next: dashboard batch report (chase 10:54 CT); 10:50 CT floor timing; 11:37 CT window read; row 89 merge then release in Sunday's gap (02:00-10:05 CT) with row 88's Q1-Q3/Q9/Q5 re-run after.
