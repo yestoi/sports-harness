@@ -1737,3 +1737,206 @@ class RfqQuote(Base):
     #: Ruling I4: a postponed/canceled leg voids the whole combo. Graded once (`graded_at` set)
     #: and never re-read, distinct from `closing_stale` (a pricing gap on a game that did play).
     voided: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+# --- 6D.1 (addendum §2, ruling I5): the experiment's eleven `exp_*` tables ----------------------
+#
+# Additive only: eleven new tables, four plain indexes on them and one new view (declared in
+# `harness/db/schema.py`), mirrored statement for statement in
+# `migrations/versions/0015_phase6d1_exec_viability.py`. None of them is a bulk tape table or a
+# partition of one, so F65's CONCURRENTLY rule does not reach them and their indexes go on
+# `__table_args__` and in `_INDEX_DDL` (§2). Nothing here alters, renames, drops or backfills an
+# existing object. The experiment's own writer collects these tables by the `exp_` prefix alone,
+# so a model declared here needs nothing else to be picked up; nothing in this file imports or
+# names that package, which its isolation tests assert.
+#
+# `run_id` is `Uuid(as_uuid=False)`: the experiment carries run ids as the strings its manifest
+# is hashed over, so the column speaks the same type the writer hands it.
+
+
+class ExpRun(Base):
+    """6D.1 §2. One frozen run: its manifest, the hash every resume is checked against, and the
+    predecessor it supersedes when a field changed (§1.2)."""
+    __tablename__ = "exp_run"
+    run_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    code_sha: Mapped[str | None] = mapped_column(String(40))
+    #: One of `manifest.CLOCK_MODES`; §2's invariant query reads exactly those two spellings.
+    clock_mode: Mapped[str] = mapped_column(String(24), nullable=False)
+    status: Mapped[str] = mapped_column(String(12), nullable=False)   # open|frozen|stopped|done
+    supersedes: Mapped[str | None] = mapped_column(Uuid(as_uuid=False))
+
+
+class ExpArm(Base):
+    """6D.1 §2. One arm of a run, with the frozen `ArmSpec` its decisions were made under."""
+    __tablename__ = "exp_arm"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), nullable=False)
+    arm_id: Mapped[str] = mapped_column(String(8), nullable=False)
+    label: Mapped[str] = mapped_column(String(32), nullable=False)
+    spec: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    spec_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    __table_args__ = (UniqueConstraint("run_id", "arm_id", name="uq_exp_arm"),)
+
+
+class ExpOrder(Base):
+    """6D.1 §2. One arm's own order. No `exp_order_event` table: `placed_at`, `expiry`,
+    `cancelled_at` and `cancel_reason` carry every lifecycle transition (I5).
+
+    `id` is the **arm's own** order id, which is negative by construction (`ArmWorld.
+    next_order_id`) so it can never be read as an `orders.id`; the primary key is
+    `(run_id, arm_id, id)`, which is what makes two chunkings of the same run produce the same
+    ids and two arms of one run keep their own (§1.4). `status` and `filled_contracts` are
+    beside §2's list: the whole lifecycle has to be queryable without joining the fills back
+    (§5's capacity cases read `status`), and a partial fill has to carry forward across a chunk
+    boundary.
+    """
+    __tablename__ = "exp_order"
+    run_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True)
+    arm_id: Mapped[str] = mapped_column(String(8), primary_key=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    variant_id: Mapped[str] = mapped_column(String(12), nullable=False)
+    intent_id: Mapped[int | None] = mapped_column(BigInteger)
+    venue_market_id: Mapped[int | None] = mapped_column(Integer)
+    ticker: Mapped[str] = mapped_column(String(64), nullable=False)
+    side: Mapped[str] = mapped_column(String(4), nullable=False)
+    prob: Mapped[Decimal] = mapped_column(PROB, nullable=False)
+    contracts: Mapped[Decimal] = mapped_column(CONTRACTS, nullable=False)
+    filled_contracts: Mapped[Decimal] = mapped_column(CONTRACTS, default=0, nullable=False)
+    placed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expiry: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    queue_ahead_at_place: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_reason: Mapped[str | None] = mapped_column(String(24))
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    episode_id: Mapped[int | None] = mapped_column(BigInteger)
+    __table_args__ = (Index("ix_exp_order_run_arm", "run_id", "arm_id", "placed_at"),)
+
+
+class ExpFill(Base):
+    """6D.1 §2. One fill an arm's own order took from the recorded tape, after
+    `liquidity.PortfolioLedger` capped it to what the print actually had (§1.5)."""
+    __tablename__ = "exp_fill"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), nullable=False)
+    arm_id: Mapped[str] = mapped_column(String(8), nullable=False)
+    exp_order_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    filled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    contracts: Mapped[Decimal] = mapped_column(CONTRACTS, nullable=False)
+    prob: Mapped[Decimal] = mapped_column(PROB, nullable=False)
+    fee: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    fill_method: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_trade_id: Mapped[str | None] = mapped_column(String(64))
+    through: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    __table_args__ = (Index("ix_exp_fill_trade", "run_id", "arm_id", "source_trade_id"),)
+
+
+class ExpAllocation(Base):
+    """6D.1 §2/§1.5. How much of one recorded print one **portfolio identity**
+    `(run_id, arm_id, variant_id)` has consumed. The pk is that identity plus the venue's own
+    trade id, which is what makes the allocation idempotent across a resume."""
+    __tablename__ = "exp_allocation"
+    run_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True)
+    arm_id: Mapped[str] = mapped_column(String(8), primary_key=True)
+    variant_id: Mapped[str] = mapped_column(String(12), primary_key=True)
+    source_trade_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    available: Mapped[Decimal] = mapped_column(CONTRACTS, nullable=False)
+    allocated: Mapped[Decimal] = mapped_column(CONTRACTS, nullable=False)
+
+
+class ExpObservation(Base):
+    """6D.1 §2. One observer read. The raw body lives only in the hashed file tree (I5);
+    `credits_last`/`credits_remaining` are `parse_credit_headers`' `x-requests-last` and
+    `x-requests-remaining` (I9), the one aggregate the observer and the recorder share."""
+    __tablename__ = "exp_observation"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sport: Mapped[str | None] = mapped_column(String(8))
+    game_id: Mapped[int | None] = mapped_column(BigInteger)
+    venue_market_id: Mapped[int | None] = mapped_column(Integer)
+    fair_p: Mapped[Decimal | None] = mapped_column(PROB)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    credits: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    credits_last: Mapped[int | None] = mapped_column(Integer)
+    credits_remaining: Mapped[int | None] = mapped_column(BigInteger)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    body_path: Mapped[str | None] = mapped_column(Text)
+    body_sha256: Mapped[str | None] = mapped_column(String(64))
+
+
+class ExpOutcome(Base):
+    """6D.1 §2/§1.9. One markout horizon for one of an arm's orders. A censored outcome carries
+    no value, and an uncensored one with no value names why it is missing."""
+    __tablename__ = "exp_outcome"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), nullable=False)
+    arm_id: Mapped[str] = mapped_column(String(8), nullable=False)
+    exp_order_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    horizon: Mapped[str] = mapped_column(String(8), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    value: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
+    source_age_s: Mapped[int | None] = mapped_column(Integer)
+    censored: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    missing_reason: Mapped[str | None] = mapped_column(String(24))
+
+
+class ExpBookHealth(Base):
+    """6D.1 §2/§1.7. One classified book interval and the evidence its verdict was made on;
+    written by `bookhealth.persist` through T1's writer."""
+    __tablename__ = "exp_book_health"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), nullable=False)
+    ticker: Mapped[str] = mapped_column(String(64), nullable=False)
+    interval_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    interval_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    classification: Mapped[str] = mapped_column(String(24), nullable=False)
+    evidence: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+
+
+class ExpCheckpoint(Base):
+    """6D.1 §2/§1.4. One `(run, arm)`'s resume point: the tape cursor, and in `state` the
+    liquidity ledger, the open-order set, the capacity counter and the exposure. `manifest_hash`
+    is what `storage.resume` refuses on (§1.2), before it reads this row."""
+    __tablename__ = "exp_checkpoint"
+    run_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True)
+    arm_id: Mapped[str] = mapped_column(String(8), primary_key=True)
+    cursor_event_id: Mapped[int | None] = mapped_column(BigInteger)
+    state: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ExpMismatch(Base):
+    """6D.1 §2/§1.3(f). One difference between the recorded slice and an arm's reproduction.
+    `kind` is one of `baseline.MISMATCH_KINDS`; an explained one names its cause."""
+    __tablename__ = "exp_mismatch"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), nullable=False)
+    arm_id: Mapped[str] = mapped_column(String(8), nullable=False)
+    instant: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    venue_market_id: Mapped[int | None] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    expected: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    actual: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    cause: Mapped[str | None] = mapped_column(String(32))
+    explained: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False,
+                                            server_default=text("false"))
+    __table_args__ = (Index("ix_exp_mismatch_run", "run_id", "explained"),)
+
+
+class ExpLimitation(Base):
+    """6D.1 §2/§1.3. One named limitation of a run: what the record cannot answer, for the
+    slice, arm or market `scope` names. `kind` is one of `capture.LIMITATION_KINDS`, and at most
+    a few hundred rows exist per run -- one per kind per affected scope, never one per row."""
+    __tablename__ = "exp_limitation"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), nullable=False)
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    scope: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (Index("ix_exp_limitation_run", "run_id", "kind"),)

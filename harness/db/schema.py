@@ -305,6 +305,16 @@ _INDEX_DDL = (
     # Pulse's research section bounds on this column (review T16 Important 1): without this,
     # `rfq_quotes`, a BOUNDED_TABLES table, is filtered on `computed_at` after a sequential scan.
     "create index if not exists ix_rfq_quotes_computed on rfq_quotes (computed_at desc)",
+    # 6D.1 §2 (ruling I5): the four indexes of the eleven new `exp_*` tables, identical to the
+    # models' own `__table_args__` declarations and to
+    # `migrations/versions/0015_phase6d1_exec_viability.py`'s `op.create_index` calls -- which
+    # is what `tests/test_alembic.py`'s catalogue diff compares. Plain, never CONCURRENTLY:
+    # none of these tables is a bulk tape table or a partition of one, and each is created
+    # empty with no writer attached, so F65's rule (fix 25, no carve-out) does not reach them.
+    "create index if not exists ix_exp_order_run_arm on exp_order (run_id, arm_id, placed_at)",
+    "create index if not exists ix_exp_fill_trade on exp_fill (run_id, arm_id, source_trade_id)",
+    "create index if not exists ix_exp_mismatch_run on exp_mismatch (run_id, explained)",
+    "create index if not exists ix_exp_limitation_run on exp_limitation (run_id, kind)",
 )
 
 #: Carried fix 16. BRIN on `fair_values(created_at)` so the bounded staleness check
@@ -808,7 +818,27 @@ where n.kind = 'veto'
   and d.decision in ('proceed', 'reduce', 'veto')
 """
 
-_VIEW_DDL = (_POSITIONS_VIEW, _CLV_VIEW, _ORDER_EPISODES_VIEW, _VETO_H9_VIEW)
+#: 6D.1 §3 row 4 / ruling I8. Parameterless: the day is filtered in the caller's `where`, so the
+#: view can be a plain `create or replace view`. `veto_queue` carries `game_id` and
+#: `veto_decisions` does not, which is why the join goes through the queue.
+_EXP_VETO_COVERAGE_VIEW = """
+create or replace view exp_veto_coverage as
+select date(d.decided_at at time zone 'America/Chicago') as day,
+       g.sport,
+       case when g.kickoff_utc is null then 'unknown'
+            when d.decided_at > g.kickoff_utc then 'after_kickoff'
+            when d.decided_at > g.kickoff_utc - interval '6 hours' then 'inside_6h'
+            else 'outside_6h' end as window_label,
+       count(*) filter (where d.decision in ('proceed','reduce','veto')) as decided,
+       count(*) filter (where d.decision = 'veto_skipped_budget') as reserved
+from veto_decisions d
+join veto_queue q on q.signal_id = d.signal_id
+left join games g on g.id = q.game_id
+group by 1, 2, 3
+"""
+
+_VIEW_DDL = (_POSITIONS_VIEW, _CLV_VIEW, _ORDER_EPISODES_VIEW, _VETO_H9_VIEW,
+             _EXP_VETO_COVERAGE_VIEW)
 
 #: One additive backfill for the rows that predate `match_key`; the matcher writes it going
 #: forward. Composed exactly like the Python side, with NULL parts rendered empty.
@@ -1159,5 +1189,6 @@ def drop_schema(engine: Engine) -> None:
     never be left behind in a test database."""
     tables = ", ".join(sorted(Base.metadata.tables))
     with engine.begin() as conn:
-        conn.execute(text("drop view if exists positions, clv, order_episodes, veto_h9"))
+        conn.execute(text("drop view if exists positions, clv, order_episodes, veto_h9, "
+                            "exp_veto_coverage"))
         conn.execute(text(f"drop table if exists {tables} cascade"))

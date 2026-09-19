@@ -11,7 +11,7 @@ from harness.config.settings import get_settings
 from harness.execution.book import newest_ws_connect
 from harness.experiments.execution_viability import EXP_DB_ROLE, EXP_LABEL
 from harness.experiments.execution_viability import (adapter, baseline, bookhealth, capture,
-                                                     source, storage, veto_profile)
+                                                     liquidity, source, storage, veto_profile)
 from harness.logging_setup import configure_logging
 from harness.research import pacing
 
@@ -347,3 +347,88 @@ def baseline_check(run_id: str = typer.Option(..., "--run-id"),
                                          now=datetime.now(timezone.utc))
     print(baseline.render_baseline(mismatches, instants=len(instants), live_estimate=estimate,
                                    limitations=[spacing]))
+
+
+@exp_app.command("run")
+def run_cmd(run_id: str = typer.Option(..., "--run-id"),
+            arm: str = typer.Option("A", "--arm"),
+            since: datetime = typer.Option(..., "--since", formats=["%Y-%m-%dT%H:%M:%S%z"]),
+            until: datetime = typer.Option(..., "--until", formats=["%Y-%m-%dT%H:%M:%S%z"]),
+            variants: str = typer.Option(..., "--variants"),
+            chunk_hours: float = typer.Option(1.0, "--chunk-hours")) -> None:
+    """Step one arm over the retained decision instants of a window, writing its own orders,
+    fills, print allocations and resume point (§1.4).
+
+    Resumes where the arm's `exp_checkpoint` row left off, and refuses outright if the run's
+    manifest has changed since that checkpoint (§1.2). Reads through §1.1(b)'s read-only
+    reader and writes only `exp_*` rows through §1.1(c)'s writer, so it fails closed without
+    the §4.7 grant.
+    """
+    configure_logging()
+    if until <= since:
+        raise typer.BadParameter("--until must be after --since")
+    if chunk_hours <= 0:
+        raise typer.BadParameter("--chunk-hours must be a positive number of hours")
+    variant_ids = [v.strip() for v in variants.split(",") if v.strip()]
+    if not variant_ids:
+        raise typer.BadParameter("--variants takes a comma-separated list of variant ids")
+    # §0.6: the label first, after the arguments are validated and before any number.
+    print(EXP_LABEL)
+    s = get_settings()
+    from harness.execution.plan import ExecSettings
+    from harness.execution.store import variant_configs
+
+    stored = None
+    with source.reader(s) as session:
+        instants, _samples, estimate = _clock(session, since=since, until=until,
+                                              variant_ids=variant_ids)
+        row = session.execute(text(
+            "select manifest, manifest_hash from exp_run where run_id = :r"),
+            {"r": run_id}).first()
+        if row is None:
+            raise typer.BadParameter(
+                f"no frozen exp_run row for {run_id}: `harness exp capture` and the run's "
+                f"manifest come first (§1.2)")
+        manifest_hash = row.manifest_hash
+        # The stored hash is the authority a resume is refused against; `storage.resume`
+        # re-checks it against the manifest the caller holds, before it reads the state.
+        stored = session.execute(text(
+            "select state, cursor_event_id from exp_checkpoint "
+            "where run_id = :r and arm_id = :a"), {"r": run_id, "a": arm}).first()
+        busy = capture._yield_if_executor_busy(session, s)
+        runner = adapter.ArmRunner(run_id=run_id, arm_id=arm, policy=None,
+                                   variant_cfg=variant_configs(session, variant_ids),
+                                   exec_settings=ExecSettings.from_settings(s), walkers={},
+                                   tz=s.tz_local, ledger=liquidity.PortfolioLedger())
+        if stored is not None:
+            state = dict(stored.state or {})
+            state["cursor_event_id"] = stored.cursor_event_id
+            adapter.restore(runner, state)
+        writer = storage.ExperimentWriter.open(s, run_id=run_id)
+        try:
+            chunk = timedelta(hours=chunk_hours)
+            results = []
+            start = since
+            while start < until:
+                end = min(start + chunk, until)
+                window = [i for i in instants if start <= i < end]
+                results.append(adapter.run_chunk(
+                    session, runner, window, writer=writer, manifest_hash=manifest_hash,
+                    mismatch_max=s.exp_mismatch_max))
+                writer.commit()
+                start = end
+                if results[-1].stopped == "mismatch_max":
+                    break
+        finally:
+            writer.close()
+    print(f"run={run_id} arm={arm} resumed={stored is not None} chunks={len(results)}")
+    print(f"  retained action instants   {len(instants)}")
+    print(f"  live loop estimate         {estimate}")
+    print(f"  stepped                    {sum(r.instants for r in results)}")
+    print(f"  orders                     {results[-1].orders if results else 0}")
+    print(f"  fills                      {sum(r.fills for r in results)}")
+    print(f"  open at the end            {results[-1].open_orders if results else 0}")
+    print(f"  executor busy at start     {busy}")
+    stopped = [r.stopped for r in results if r.stopped]
+    if stopped:
+        print(f"  stopped                    {stopped[-1]}")

@@ -505,14 +505,15 @@ def test_the_bulk_index_check_reads_a_revisions_constants_and_not_its_prose():
     assert not any("ix_quotes_market_fetched" in s for s in strings)     # docstring prose only
 
 
-def test_the_versions_directory_holds_fourteen_revisions():
+def test_the_versions_directory_holds_fifteen_revisions():
     assert [p.name for p in VERSIONS] == [
         "0001_baseline.py", "0002_phase45.py", "0003_brin_autosummarize.py",
         "0004_phase5.py", "0005_rfq_lookup.py", "0006_quotes_run_index.py",
         "0007_raw_events_lookup.py", "0008_positions_open_fill.py",
         "0009_score_correction.py", "0010_phase46_fun_tickets.py",
         "0011_phase6b_execution.py", "0012_phase6d_sustained_eval.py",
-        "0013_nw_executor_version.py", "0014_orders_intent_index.py"]
+        "0013_nw_executor_version.py", "0014_orders_intent_index.py",
+        "0015_phase6d1_exec_viability.py"]
 
 
 # --- carried fix 56 (second row): revision 0008 -------------------------------------------------
@@ -821,22 +822,20 @@ def test_nw_executor_version_is_in_both_catalogues(two_databases):
 
 # --- fix 85 (docket item 22, the user's ruling of 2026-09-18): revision 0014 ------------------
 
-def test_the_orders_intent_index_follows_nw_executor_version_and_is_the_pinned_head():
+def test_the_orders_intent_index_follows_nw_executor_version():
     """`ix_orders_intent`, on top of roadmap row 72's column revision.
 
-    The head moves with the revision or `migrate ensure` upgrades to a revision the checkout
-    does not carry -- and, the other way round, a revision the pinned head does not name never
-    runs at all on the release the ruling asks for. The id is 24 characters, inside the
-    `String(32)` Alembic creates `alembic_version.version_num` as, and the file name equals the
-    id as all thirteen before it do."""
-    from harness.db.migrate import HEAD_REVISION
-
+    The two pinned-head assertions moved on to
+    `test_phase6d1_exec_viability_follows_orders_intent_index_and_is_the_pinned_head`
+    (6D.1's `0015_phase6d1_exec_viability`), the same trim 0008 through 0013 each took when the
+    next revision landed on top of them; the chain assertions stay here, so a revision inserted
+    between this one and `0013_nw_executor_version` still fails. The id is 24 characters, inside
+    the `String(32)` Alembic creates `alembic_version.version_num` as, and the file name equals
+    the id as all thirteen before it do."""
     module = _load_revision("0014_orders_intent_index.py")
     assert module.revision == "0014_orders_intent_index"
     assert module.down_revision == "0013_nw_executor_version"
     assert len(module.revision) <= 32
-    assert HEAD_REVISION == "0014_orders_intent_index"
-    assert VERSIONS[-1].name == "0014_orders_intent_index.py"
 
 
 def test_the_orders_intent_index_ddl_agrees_between_schema_and_migration():
@@ -1655,3 +1654,108 @@ def test_the_phase46_statements_match_create_schema_exactly():
     assert set(module._COLUMNS) <= set(schema_module._COLUMN_DDL)
     assert set(module._INDEXES) <= set(schema_module._INDEX_DDL)
     assert set(module._CONCURRENT) <= set(schema_module._CONCURRENT_INDEX_DDL)
+
+
+# --- 6D.1 (addendum §2, ruling I5): revision 0015 ----------------------------------------------
+
+def test_phase6d1_exec_viability_follows_orders_intent_index_and_is_the_pinned_head():
+    """The experiment's eleven additive `exp_*` tables, on top of fix 85's index revision.
+
+    The head moves with the revision or `migrate ensure` upgrades to a revision the checkout
+    does not carry -- and, the other way round, a revision the pinned head does not name never
+    runs at all on the release the milestone asks for. The id is 28 characters, inside the
+    `String(32)` Alembic creates `alembic_version.version_num` as, and the file name equals the
+    id as all fourteen before it do. The controller may renumber it at merge (D9), in which case
+    this test, `down_revision` and `HEAD_REVISION` move together.
+    """
+    from harness.db.migrate import HEAD_REVISION
+
+    module = _load_revision("0015_phase6d1_exec_viability.py")
+    assert module.revision == "0015_phase6d1_exec_viability"
+    assert module.down_revision == "0014_orders_intent_index"
+    assert len(module.revision) <= 32
+    assert HEAD_REVISION == "0015_phase6d1_exec_viability"
+    assert VERSIONS[-1].name == "0015_phase6d1_exec_viability.py"
+
+
+def test_the_phase6d1_revision_undoes_nothing():
+    """`downgrade()` is `pass` (roadmap invariant 5, every revision since 0002) and the file
+    carries no statement that takes anything away: eleven `create table if not exists`, four
+    `create index if not exists` and one `create or replace view`, and nothing else."""
+    module = _load_revision("0015_phase6d1_exec_viability.py")
+    assert module.downgrade() is None
+    body = (ROOT / "migrations" / "versions"
+            / "0015_phase6d1_exec_viability.py").read_text().lower()
+    for word in ("drop ", "truncate", "delete from", "alter table", "backfill "):
+        assert word not in body, f"0015_phase6d1_exec_viability contains {word!r}"
+
+
+def test_the_eleven_exp_tables_and_their_four_indexes_are_in_both_catalogues(two_databases):
+    """6D.1 §2/ruling I5: eleven tables, four plain indexes and one view, declared as models
+    (so `create_schema` builds them) and mirrored in the revision (so a migrated database has
+    them), in the one task that owns every DDL edit of the milestone.
+    `test_a_migrated_database_matches_a_create_schema_database` would catch a disagreement;
+    this names them, so a half-landed pass says which half is missing.
+
+    `EXP_METADATA` is the same eleven: the writer's allow-list, the migration and `create_all`
+    must agree or a run writes into a table no verify query reads (§5, I5).
+    """
+    from harness.db.migrate import upgrade_head
+    from harness.experiments.execution_viability.storage import load_exp_metadata
+
+    expected = {"exp_run", "exp_arm", "exp_order", "exp_fill", "exp_allocation",
+                "exp_observation", "exp_outcome", "exp_book_health", "exp_checkpoint",
+                "exp_mismatch", "exp_limitation"}
+    assert len(load_exp_metadata().tables) == 11
+    assert set(load_exp_metadata().tables) == expected
+
+    a, b = two_databases
+    create_schema(a)
+    upgrade_head(_url(b))
+    for engine in (a, b):
+        insp = inspect(engine)
+        assert expected <= set(insp.get_table_names()), engine.url.database
+        assert "exp_veto_coverage" in set(insp.get_view_names()), engine.url.database
+        for table, index, columns in (
+                ("exp_order", "ix_exp_order_run_arm", ["run_id", "arm_id", "placed_at"]),
+                ("exp_fill", "ix_exp_fill_trade", ["run_id", "arm_id", "source_trade_id"]),
+                ("exp_mismatch", "ix_exp_mismatch_run", ["run_id", "explained"]),
+                ("exp_limitation", "ix_exp_limitation_run", ["run_id", "kind"])):
+            found = {i["name"]: i for i in insp.get_indexes(table)}
+            assert index in found, (engine.url.database, table)
+            assert found[index]["column_names"] == columns
+            assert not found[index]["unique"]
+        # §1.4: the checkpoint is one row per `(run, arm)`, which is what bounds both statements
+        # of §5's byte-identical case.
+        assert insp.get_pk_constraint("exp_checkpoint")["constrained_columns"] == [
+            "run_id", "arm_id"]
+        # §1.5: one allocation row per portfolio identity and print, never a summed one.
+        assert insp.get_pk_constraint("exp_allocation")["constrained_columns"] == [
+            "run_id", "arm_id", "variant_id", "source_trade_id"]
+
+
+def test_the_exp_index_ddl_agrees_between_the_models_and_schema_py():
+    """The `_INDEX_DDL` copies and the models' `__table_args__` name the same four indexes on
+    the same columns: `init-db` gives a populated database what `create_all` gives a fresh one.
+    """
+    from harness.db.schema import _INDEX_DDL
+
+    for statement in (
+            "create index if not exists ix_exp_order_run_arm on exp_order "
+            "(run_id, arm_id, placed_at)",
+            "create index if not exists ix_exp_fill_trade on exp_fill "
+            "(run_id, arm_id, source_trade_id)",
+            "create index if not exists ix_exp_mismatch_run on exp_mismatch (run_id, explained)",
+            "create index if not exists ix_exp_limitation_run on exp_limitation "
+            "(run_id, kind)"):
+        assert statement in _INDEX_DDL, statement
+
+
+def test_the_exp_veto_coverage_view_is_dropped_by_drop_schema(two_databases):
+    """Plan choice 7: without the name in `drop_schema`'s literal list the view survives a drop
+    and the catalogue diff becomes order-dependent."""
+    a, _ = two_databases
+    create_schema(a)
+    assert "exp_veto_coverage" in set(inspect(a).get_view_names())
+    drop_schema(a)
+    assert "exp_veto_coverage" not in set(inspect(a).get_view_names())

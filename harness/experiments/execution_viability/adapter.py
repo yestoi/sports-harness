@@ -46,6 +46,7 @@ from harness.execution import fills as fills_mod
 from harness.execution import plan as plan_mod
 from harness.execution import policy as policy_mod
 from harness.execution import store
+from harness.experiments.execution_viability.liquidity import LedgerKey, PortfolioLedger
 
 log = logging.getLogger("harness.exp")   # the runner's own reads, never a write
 
@@ -113,7 +114,8 @@ class ArmRunner:
 
     def __init__(self, *, run_id: str, arm_id: str, policy, variant_cfg: dict[str, dict],
                  exec_settings, walkers: dict | None = None,
-                 world: ArmWorld | None = None, tz: str | None = None) -> None:
+                 world: ArmWorld | None = None, tz: str | None = None,
+                 ledger: PortfolioLedger | None = None) -> None:
         self.run_id = run_id
         self.arm_id = arm_id
         # §1.6: the arms differ only in the policy argument and in which observations they may
@@ -132,10 +134,22 @@ class ArmRunner:
         #: 2). `ExecSettings` carries no timezone, so a caller holding only that one passes it.
         self.tz = ZoneInfo(tz or getattr(exec_settings, "tz_local", None) or "America/Chicago")
         self.world = world if world is not None else ArmWorld()
+        #: §1.5: the layer above `simulate_fills`. One ledger per arm, keyed by portfolio
+        #: identity inside it, so two arms in one process share no consumed quantity either.
+        self.ledger = ledger if ledger is not None else PortfolioLedger()
+        #: trade_id -> (ticker, taker_side), so an allocation is keyed exactly as the print was
+        #: observed. The tape's own `taker_side`, never a side inferred from our order.
+        self._print_keys: dict[str, tuple[str, str]] = {}
+        #: order_id -> the `exp_order` row as it stands, updated in place through the order's
+        #: lifecycle (I5: no `exp_order_event` table; the row carries every transition).
+        self.orders: dict[int, dict] = {}
         self._market_ids: set[int] = set()
         #: order_id -> its market, kept for the step in which an order is closed: the view is
         #: gone from `open_orders` by then and a fill of that step still has to name its market.
         self._order_markets: dict[int, int] = {}
+        #: The last instant this arm has decided, carried in the checkpoint so a resumed chunk
+        #: never re-decides one (§1.4's chunk boundary).
+        self.last_instant: datetime | None = None
 
     # --- world ---------------------------------------------------------------------
 
@@ -331,6 +345,14 @@ class ArmRunner:
         self.world.sim[order_id] = fills_mod.SimState.initial(paper)
         self.world.deadlines[order_id] = action.expiry
         self._order_markets[order_id] = view.venue_market_id
+        self.orders[order_id] = {
+            "run_id": self.run_id, "arm_id": self.arm_id, "id": order_id,
+            "variant_id": intent.variant_id, "intent_id": None,
+            "venue_market_id": view.venue_market_id, "ticker": view.ticker, "side": view.side,
+            "prob": view.prob, "contracts": view.contracts, "filled_contracts": ZERO,
+            "placed_at": instant, "expiry": action.expiry,
+            "queue_ahead_at_place": queue_ahead, "cancelled_at": None, "cancel_reason": None,
+            "status": "open", "episode_id": None}
         return {"kind": "place", "instant": instant, "status": "open", "order_id": order_id,
                 "intent_id": intent.intent_id, "variant_id": intent.variant_id,
                 "venue_market_id": view.venue_market_id, "ticker": view.ticker,
@@ -345,6 +367,16 @@ class ArmRunner:
         self.world.deadlines[order_id] = deadline
         self.world.open_orders = [row for row in self.world.open_orders
                                   if row.order_id != order_id]
+        record = self.orders.get(order_id)
+        if record is not None:
+            # The order's own row carries the transition (I5). A cancel stamps `cancelled_at`
+            # and its reason; an expiry stamps neither, because `expiry` already says when.
+            record["status"] = "cancelled" if kind == "cancel" else "expired"
+            if kind == "cancel":
+                record["cancelled_at"] = instant
+                record["cancel_reason"] = reason
+            # §1.4: the slot is released the instant the order stops resting, on cancel and on
+            # expiry alike; `open_orders` is the capacity counter and it has already shrunk.
         return {"kind": kind, "instant": instant,
                 "status": "cancelled" if kind == "cancel" else "expired", "order_id": order_id,
                 "reason": reason, "deadline": deadline,
@@ -372,18 +404,28 @@ class ArmRunner:
                                        paper.placed_at - fills_mod.RECON_HORIZON, at=instant)
             deltas = store.load_deltas(session, paper.ticker, state.cursor_event_id or 0,
                                        paper.placed_at, at=instant).deltas
+            self._observe_prints(paper.ticker, prints)
             result = fills_mod.simulate_fills(paper, state, ladder, prints, deltas, deadline,
                                               FILL_METHOD, cancel_policy=CANCEL_POLICY)
             self.world.sim[order_id] = result.state
+            accepted = []
             for fill in result.fills:
+                # §1.5: the portfolio may take no more of a recorded print than the print had,
+                # however many of its hypothetical orders were resting on that key. The
+                # simulator has already decided this track *may* take `fill.contracts`; the
+                # ledger only caps it (ruling I13b).
+                contracts = self._allocate(order_id, fill)
+                if contracts <= ZERO:
+                    continue
+                accepted.append((fill, contracts))
                 out.append({"kind": "fill", "order_id": order_id, "instant": instant,
                             "venue_market_id": self._market_of(order_id),
                             "side": paper.side, "ticker": paper.ticker,
-                            "filled_at": fill.filled_at, "contracts": fill.contracts,
+                            "filled_at": fill.filled_at, "contracts": contracts,
                             "prob": fill.prob, "fee": fill.fee, "fill_method": fill.fill_method,
                             "source_trade_id": fill.source_trade_id, "through": fill.through,
                             "arm_id": self.arm_id, "run_id": self.run_id})
-            self._book_fills(order_id, result)
+            self._book_fills(order_id, accepted)
         for order_id in closing:
             self.world.paper.pop(order_id, None)
             self.world.sim.pop(order_id, None)
@@ -395,20 +437,72 @@ class ArmRunner:
             return view.venue_market_id
         return self._order_markets.get(order_id)
 
-    def _book_fills(self, order_id: int, result) -> None:
-        """Carry the simulator's own filled total onto the arm's view of the order."""
+    def _observe_prints(self, ticker: str, prints) -> None:
+        """Every recorded print this step read, once, under the tape's own `taker_side`.
+
+        `TapePrint` carries no ticker of its own -- `store.load_prints` is asked for one
+        ticker at a time -- so the ticker of the read is the ticker of the print. A print whose
+        `taker_side` the venue never told us (F5) can never hit an order, and is keyed under
+        `unknown` rather than being silently merged with a real side.
+        """
+        for row in prints:
+            trade_id = getattr(row, "trade_id", None)
+            if trade_id is None or str(trade_id) in self._print_keys:
+                continue
+            key = (ticker, row.taker_side or "unknown")
+            self._print_keys[str(trade_id)] = key
+            self.ledger.observe(key[0], key[1], str(trade_id), row.count)
+
+    def _allocate(self, order_id: int, fill) -> Decimal:
+        """What this portfolio may take of `fill`, after everything it has already taken.
+
+        A fill with no source print (the crossed-book case) is not print volume and has nothing
+        to conserve, so it passes through; a print this run never observed grants nothing.
+        """
+        if fill.source_trade_id is None:
+            return fill.contracts
+        key = self._print_keys.get(str(fill.source_trade_id))
+        if key is None:
+            return ZERO
         view = self.world.order(order_id)
-        if view is None or not result.fills:
+        variant = view.variant_id if view is not None else (
+            self.orders.get(order_id, {}).get("variant_id", ""))
+        return self.ledger.allocate(
+            LedgerKey(run_id=self.run_id, arm=self.arm_id, variant=variant),
+            key[0], key[1], str(fill.source_trade_id), order_id, fill.contracts)
+
+    def _book_fills(self, order_id: int, accepted) -> None:
+        """Carry the **granted** fills onto the arm's view of the order (§1.5).
+
+        Not `result.state.filled_contracts`: that is the simulator's per-track total, which is
+        what the ledger sits above. Where nothing was capped the two are the same number.
+        """
+        view = self.world.order(order_id)
+        if view is None or not accepted:
             return
-        filled = result.state.filled_contracts
+        filled = sum((contracts for _fill, contracts in accepted), ZERO)
+        filled += view.filled_contracts or ZERO
         self.world.open_orders = [
             replace(row, filled_contracts=filled) if row.order_id == order_id else row
             for row in self.world.open_orders]
-        for fill in result.fills:
-            self.world.fill_log.append((fill.filled_at, view.variant_id,
-                                        fill.contracts * fill.prob))
-        stake = sum((fill.contracts * fill.prob for fill in result.fills), ZERO)
+        for fill, contracts in accepted:
+            self.world.fill_log.append((fill.filled_at, view.variant_id, contracts * fill.prob))
+        stake = sum((contracts * fill.prob for fill, contracts in accepted), ZERO)
         self.world.fills_today.append(plan_mod.FillView(variant_id=view.variant_id, stake=stake))
+        record = self.orders.get(order_id)
+        if record is not None:
+            record["filled_contracts"] = filled
+        if filled >= view.contracts:
+            # A fully filled order does not rest: the venue takes it out of the book, so the
+            # arm's capacity counter is released on a fill exactly as it is on a cancel and an
+            # expiry (§1.4). Its remaining lifecycle is over, and its row says so.
+            self.world.open_orders = [row for row in self.world.open_orders
+                                      if row.order_id != order_id]
+            self.world.paper.pop(order_id, None)
+            self.world.sim.pop(order_id, None)
+            self.world.deadlines.pop(order_id, None)
+            if record is not None:
+                record["status"] = "filled"
 
     def _resting(self) -> list[dict]:
         out = []
@@ -421,3 +515,208 @@ class ArmRunner:
                         "queue_ahead": state.queue_remaining, "placed_at": view.placed_at,
                         "expiry": view.expiry, "arm_id": self.arm_id, "run_id": self.run_id})
         return out
+
+
+# --- §1.4: the persisted per-arm state ---------------------------------------------------------
+#
+# One `(run, arm)`'s whole world, encoded into `exp_checkpoint.state` and decoded back. The
+# encoding is by value and by tag -- no pickle, no `eval`, and every class it can rebuild is on
+# `_STATE_CLASSES` below -- so a checkpoint is readable, diffable and refusable on its own terms.
+
+_STATE_CLASSES: dict[str, type] = {
+    "plan.OpenOrderView": plan_mod.OpenOrderView,
+    "plan.PositionView": plan_mod.PositionView,
+    "plan.FillView": plan_mod.FillView,
+    "fills.PaperOrder": fills_mod.PaperOrder,
+    "fills.SimState": fills_mod.SimState,
+}
+_STATE_NAMES = {cls: name for name, cls in _STATE_CLASSES.items()}
+
+
+def encode_state(value):
+    """JSON-safe, lossless for every type the arm's world holds."""
+    import uuid as uuid_mod
+    from dataclasses import fields as dc_fields, is_dataclass
+
+    if isinstance(value, Decimal):
+        return {"__d": str(value)}
+    if isinstance(value, datetime):
+        return {"__t": value.isoformat()}
+    if isinstance(value, uuid_mod.UUID):
+        return {"__u": str(value)}
+    if isinstance(value, (set, frozenset)):
+        return {"__s": [encode_state(v) for v in sorted(value, key=repr)]}
+    if isinstance(value, tuple):
+        return {"__tu": [encode_state(v) for v in value]}
+    if is_dataclass(value) and not isinstance(value, type):
+        name = _STATE_NAMES.get(type(value))
+        if name is None:
+            raise TypeError(f"{type(value)!r} is not a checkpointable part of the arm's world")
+        return {"__c": name,
+                "f": {f.name: encode_state(getattr(value, f.name)) for f in dc_fields(value)}}
+    if isinstance(value, list):
+        return [encode_state(v) for v in value]
+    if isinstance(value, dict):
+        return {"__m": [[encode_state(k), encode_state(v)] for k, v in value.items()]}
+    return value
+
+
+def decode_state(value):
+    import uuid as uuid_mod
+
+    if isinstance(value, list):
+        return [decode_state(v) for v in value]
+    if not isinstance(value, dict):
+        return value
+    if "__d" in value:
+        return Decimal(value["__d"])
+    if "__t" in value:
+        return datetime.fromisoformat(value["__t"])
+    if "__u" in value:
+        return uuid_mod.UUID(value["__u"])
+    if "__s" in value:
+        return {decode_state(v) for v in value["__s"]}
+    if "__tu" in value:
+        return tuple(decode_state(v) for v in value["__tu"])
+    if "__m" in value:
+        return {decode_state(k): decode_state(v) for k, v in value["__m"]}
+    if "__c" in value:
+        cls = _STATE_CLASSES[value["__c"]]
+        return cls(**{k: decode_state(v) for k, v in value["f"].items()})
+    return {k: decode_state(v) for k, v in value.items()}
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkResult:
+    """What one chunk of a run did, and why it stopped."""
+
+    run_id: str
+    arm_id: str
+    instants: int
+    last_instant: datetime | None
+    orders: int
+    fills: int
+    open_orders: int
+    stopped: str | None
+
+
+def snapshot(runner: "ArmRunner") -> dict:
+    """The arm's whole world as `exp_checkpoint.state` (§1.4).
+
+    The cursor, the liquidity ledger, the open-order set, the capacity counter, the exposure
+    (carried as the fill log the caps are rebuilt from) and the order rows themselves. A chunk
+    boundary is a resume point, so everything a later instant could read has to be in here.
+    """
+    world = runner.world
+    # The top level is a plain JSON object with its own keys: `exp_checkpoint.state` has to be
+    # readable by a `state->>'...'` query (§5 reads the capacity counter that way), so only the
+    # *values* are tagged.
+    return {key: encode_state(value) for key, value in {
+        "open_orders": world.open_orders,
+        "positions": world.positions,
+        "fill_log": world.fill_log,
+        "paper": world.paper,
+        "sim": world.sim,
+        "deadlines": world.deadlines,
+        "cursor_event_id": world.cursor_event_id,
+        "next_order_id": world.next_order_id,
+        "orders": runner.orders,
+        "ledger": runner.ledger.as_rows(),
+        "print_keys": runner._print_keys,
+        "market_ids": sorted(runner._market_ids),
+        "order_markets": runner._order_markets,
+        # The capacity counter, written out rather than left to be recounted: §1.4's "two arms
+        # cannot see each other's capacity counter" is a statement about this number.
+        "open_orders_count": len(world.open_orders),
+        "last_instant": runner.last_instant,
+    }.items()}
+
+
+def restore(runner: "ArmRunner", state: dict) -> None:
+    """Put a decoded checkpoint back into `runner`. The inverse of `snapshot`."""
+    decoded = {k: decode_state(v) for k, v in state.items() if k != "cursor_event_id"}
+    world = runner.world
+    world.open_orders = list(decoded.get("open_orders") or [])
+    world.positions = list(decoded.get("positions") or [])
+    world.fill_log = [tuple(row) for row in (decoded.get("fill_log") or [])]
+    world.fills_today = [plan_mod.FillView(variant_id=variant, stake=stake)
+                         for _ts, variant, stake in world.fill_log]
+    world.paper = {int(k): v for k, v in (decoded.get("paper") or {}).items()}
+    world.sim = {int(k): v for k, v in (decoded.get("sim") or {}).items()}
+    world.deadlines = {int(k): v for k, v in (decoded.get("deadlines") or {}).items()}
+    world.cursor_event_id = state.get("cursor_event_id")
+    world.next_order_id = int(decoded.get("next_order_id", -1))
+    runner.orders = {int(k): v for k, v in (decoded.get("orders") or {}).items()}
+    runner.ledger.restore(decoded.get("ledger") or [])
+    runner._print_keys = {str(k): tuple(v) for k, v in (decoded.get("print_keys") or {}).items()}
+    runner._market_ids = set(decoded.get("market_ids") or [])
+    runner._order_markets = {int(k): v for k, v in (decoded.get("order_markets") or {}).items()}
+    runner.last_instant = decoded.get("last_instant")
+
+
+def run_chunk(session: Session, runner: "ArmRunner", instants: Sequence[datetime], *,
+              writer, manifest_hash: str, stop_after: int | None = None,
+              mismatch_max: int | None = None) -> ChunkResult:
+    """Step `instants`, persist what the arm did, and leave a resume point behind (§1.4).
+
+    Every instant at or before the checkpoint's `last_instant` is skipped, which is what makes
+    a chunk boundary a resume point and 3 x 1 h identical to 1 x 3 h: the second chunk does not
+    re-decide the first chunk's instants, and it starts holding exactly what the first left.
+
+    `stop_after` is the mid-slice stop (§5's kill case and §4.3's cooperative yield): the run
+    stops after that many *stepped* instants with its checkpoint written, and a resume
+    continues from the next one.
+    """
+    from harness.experiments.execution_viability import baseline as baseline_mod
+    from harness.experiments.execution_viability import storage as storage_mod
+
+    stepped = 0
+    stopped = None
+    fills: list[dict] = []
+    mismatches: list = []
+    for instant in instants:
+        if runner.last_instant is not None and instant <= runner.last_instant:
+            continue
+        result = runner.step(session, instant)
+        runner.last_instant = instant
+        stepped += 1
+        fills.extend(result.fills)
+        for action in result.actions:
+            if action.get("kind") == "skip" and action.get("reason") == plan_mod.EXEC_CAPACITY:
+                # §1.4: the 150-slot pool is shared inside the arm, and a blocked placement is
+                # recorded rather than silently dropped. `capacity` is §2's own mismatch kind;
+                # `exp_limitation`'s vocabulary is closed and does not carry this (ruling I5).
+                mismatches.append(baseline_mod.Mismatch(
+                    run_id=runner.run_id, arm_id=runner.arm_id, instant=instant,
+                    venue_market_id=None, kind="capacity",
+                    expected={"placed": True},
+                    actual={"placed": False, "open_orders": len(runner.world.open_orders),
+                            "max_open_orders": runner.exec_settings.max_open_orders},
+                    cause=plan_mod.EXEC_CAPACITY, explained=True))
+        if mismatch_max is not None and len(mismatches) > mismatch_max:
+            stopped = "mismatch_max"
+            break
+        if stop_after is not None and stepped >= stop_after:
+            stopped = "stop_after"
+            break
+
+    # The tape cursor of the arm's furthest-advanced track: `exp_checkpoint.cursor_event_id`.
+    cursor = max((state.cursor_event_id or 0 for state in runner.world.sim.values()), default=0)
+    runner.world.cursor_event_id = cursor or runner.world.cursor_event_id
+    orders = storage_mod.write_orders(writer, list(runner.orders.values()))
+    written = storage_mod.write_fills(writer, [
+        {"run_id": row["run_id"], "arm_id": row["arm_id"], "exp_order_id": row["order_id"],
+         "filled_at": row["filled_at"], "contracts": row["contracts"], "prob": row["prob"],
+         "fee": row["fee"], "fill_method": row["fill_method"],
+         "source_trade_id": row["source_trade_id"], "through": row["through"]}
+        for row in fills])
+    storage_mod.write_allocations(writer, runner.ledger.as_rows())
+    if mismatches:
+        storage_mod.write_mismatches(writer, mismatches)
+    storage_mod.save_checkpoint(
+        writer, run_id=runner.run_id, arm_id=runner.arm_id,
+        cursor_event_id=runner.world.cursor_event_id, state=snapshot(runner),
+        manifest_hash=manifest_hash)
+    return ChunkResult(run_id=runner.run_id, arm_id=runner.arm_id, instants=stepped,
+                       last_instant=runner.last_instant, orders=orders, fills=written,
+                       open_orders=len(runner.world.open_orders), stopped=stopped)
