@@ -50,7 +50,8 @@ from harness.parlay.needs import FINAL_STATUSES
 from harness.research import pacing
 from harness.research.client import (PRIMARY_MODEL, SHADOW_MODEL, ResearchClient,
                                      web_search_tool)
-from harness.research.features import build_features, feature_delta, invalidated
+from harness.research.features import (VALIDITY_WINDOWS, build_features,
+                                       feature_delta, invalidated)
 from harness.research.notes import write_notes
 from harness.research.prompt import (EFFORT, MAX_OUTPUT_TOKENS, OUTPUT_SCHEMA, PROMPT_HASH,
                                      SYSTEM_BLOCKS, THINKING, render_user)
@@ -414,6 +415,17 @@ def veto_pass(session: Session, now: datetime, settings, client=None) -> dict:
     `client` is injected by the tests and built here in production. Dormancy is checked before
     the claim, never after: a claim without a call would leave the bucket claimed and never
     decided.
+
+    **The cached context has a validity window per key** (6D.1 1.8(e)). A same-key resting
+    order is evidence of repeated context, not an unconditional reason to suppress new news:
+    new material information bypasses the cached context and forces a call within the
+    reservation. The trigger's answer is inherited only while `invalidated` finds neither a
+    moved key nor an elapsed `features.VALIDITY_WINDOWS` entry between the trigger's own frozen
+    as-of and this signal's. An expiry is recorded exactly like any other invalidator -- its
+    key's label in `reason_code`, `from_cache = false` -- with `{"expired": key, "window_s": n}`
+    in the delta, so a reader of t7 can tell an expiry from a moved feature. It forces a call
+    and nothing more: the call is reserved through `reserve_spend` like every other, and a
+    refused reservation writes `veto_skipped_budget` with the cap's own reason code.
     """
     counts = {"status": "ok", "calls": 0, "decided": 0, "skipped_budget": 0}
     if client is None:
@@ -428,6 +440,12 @@ def veto_pass(session: Session, now: datetime, settings, client=None) -> dict:
         return counts
 
     trigger_features: dict | None = None
+    #: The instant the cached context was frozen: the trigger signal's own `created_at`, which
+    #: is what `build_features` closed every window at (ruling A-I3) and what its decision row
+    #: carries as `signal_created_at`. The age is measured between the two signals' frozen
+    #: as-ofs and never against the wall clock: `invalidated` stays a pure function of the two
+    #: contexts, and a backlogged sweep decides a pair of signals exactly as a current one does.
+    trigger_as_of: datetime | None = None
     trigger_call: uuid.UUID | None = None
     trigger_decision: tuple[str, object, str | None] | None = None
 
@@ -441,7 +459,15 @@ def veto_pass(session: Session, now: datetime, settings, client=None) -> dict:
             continue
 
         numeric, untrusted = build_features(session, item, item.created_at)
-        fired = None if trigger_features is None else invalidated(trigger_features, numeric)
+        fired = expired = None
+        if trigger_features is not None:
+            # The delta first, then the cache's age (1.8(e)): a moved key is news whatever the
+            # clock says, and `expired` is set only when nothing moved but a window ran out.
+            fired = invalidated(trigger_features, numeric)
+            if fired is None:
+                expired = invalidated(trigger_features, numeric, cached_at=trigger_as_of,
+                                      as_of=item.created_at)
+                fired = expired
         if trigger_features is not None and fired is None:
             decision, confidence, code = trigger_decision
             _record(session, item, now, decision=decision, call_id=trigger_call,
@@ -471,12 +497,19 @@ def veto_pass(session: Session, now: datetime, settings, client=None) -> dict:
         else:
             graded = _grade(primary.output, primary.snippets)
         decision, confidence, code = graded
+        # 1.8(e): an expiry names the window it left, so a reader of t7 can tell a call forced
+        # by an elapsed context from one forced by a moved feature. Every other call keeps the
+        # empty delta it has always carried.
+        delta = ({} if expired is None
+                 else {"expired": expired,
+                       "window_s": int(VALIDITY_WINDOWS[expired].total_seconds())})
         # The grading code wins when there is one -- a downgrade is the more important thing to
         # record -- and the invalidator that forced this call fills the field otherwise.
         _record(session, item, now, decision=decision, call_id=call_id, confidence=confidence,
-                from_cache=False, delta={}, reason_code=code or fired)
+                from_cache=False, delta=delta, reason_code=code or fired)
         counts["decided"] += decision in DECIDED
-        trigger_features, trigger_call, trigger_decision = numeric, call_id, graded
+        trigger_features, trigger_as_of = numeric, item.created_at
+        trigger_call, trigger_decision = call_id, graded
 
     return counts
 

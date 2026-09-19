@@ -39,6 +39,40 @@ BUCKET_MINUTES = 5
 #: therefore **this phase's own constant with the addendum as its source**, stated once, here.
 #: If the variants' velocity threshold is ever re-tuned, this is the second place to change.
 FAIR_MOVE_INVALIDATOR = Decimal("0.02")
+#: 6D.1 1.8(e): how long the **cached** context for one invalidator key stays valid, per key.
+#: The three keys are exactly the three labels `invalidated` returns, so an elapsed window is
+#: reported as that key's own label and `veto_decisions.reason_code` keeps its vocabulary (D36).
+#: Every window is derived from a cadence the harness already runs on -- none of the three is a
+#: `Settings` field, so nothing here is frozen at import that a deployment could change under it
+#: (if one ever becomes one, read it in `invalidated`, not here):
+#:
+#: * `espn_status`: `ESPN_POLL_S`, the recorder's own scoreboard cadence. Once a full poll
+#:   interval has passed the harness has re-read the scoreboard at least once, so "the status
+#:   has not changed" is no longer something the cached context can be assumed to still say.
+#: * `weather`: `WEATHER_REFETCH`, the weather source's own per-game refetch interval. The
+#:   forecast is hourly at the source and is refetched hourly, so an hour is exactly how long a
+#:   cached weather context can describe the newest snapshot that exists.
+#: * `fair_move`: `FEATURE_WINDOW`, the fair history every vector is built over. Once the cache
+#:   is older than the window itself, the trigger's fair history and the new signal's share no
+#:   point at all -- nothing in the cached fair context describes the market being asked about.
+#:
+#: Shortest first, which is the order `invalidated` tests them in: when more than one window has
+#: run out the strictest one names the decision.
+#: The recorder fetches each sport's ESPN scoreboard once per 900 s and no oftener
+#: (`harness/recorder/tick.py::RecorderTick._espn`, `self._due(store.get_source_state(session,
+#: key), now, 900)`, and the same 900 s on `_espn_rollover`'s dated fetch). Restated here rather
+#: than imported, for the reason `FAIR_MOVE_INVALIDATOR` is: this module is a leaf of the
+#: research package and importing the recorder tick to read one literal would pull the whole
+#: fetch path into `app-research`. `tests/test_veto_features.py` pins it to that call site.
+ESPN_POLL_S = 900
+#: `harness/weather/snapshots.py::REFETCH_AFTER`, the weather source's per-game refetch
+#: interval ("R:211: outdoor games inside 72 hours, hourly"). Restated for the same reason and
+#: pinned to the constant itself by `tests/test_veto_features.py`.
+WEATHER_REFETCH = timedelta(hours=1)
+VALIDITY_WINDOWS: dict[str, timedelta] = {"espn_status": timedelta(seconds=ESPN_POLL_S),
+                                          "weather": WEATHER_REFETCH,
+                                          "fair_move": FEATURE_WINDOW}
+
 #: Ruling A-M4: a fixed enum, never the venue's own string. `games.status` is kept raw and
 #: lowercased by the scoreboard linker, so anything outside this set becomes `unknown` rather
 #: than putting free text where the prompt says the numbers are.
@@ -248,12 +282,42 @@ def _decimal(value) -> Decimal | None:
         return None
 
 
-def invalidated(trigger: dict, other: dict) -> str | None:
-    """Which invalidator fired, or None (addendum 0.2, ruling B-I2).
+def _elapsed(cached_at: datetime | None, as_of: datetime | None) -> str | None:
+    """The first key whose `VALIDITY_WINDOWS` entry has run out, or None (6D.1 1.8(e)).
+
+    Both timestamps or neither: one alone is no age at all, and a caller that has only one gets
+    the delta-based path unchanged. The comparison is `>=`, the same "due" test
+    `harness/recorder/cadence.py::is_due` makes -- at the window exactly, the source the key
+    comes from is due again and the cached context has elapsed with it.
+    """
+    if cached_at is None or as_of is None:
+        return None
+    age = as_of - cached_at
+    for key, window in VALIDITY_WINDOWS.items():
+        if age >= window:
+            return key
+    return None
+
+
+def invalidated(trigger: dict, other: dict, *, cached_at: datetime | None = None,
+                as_of: datetime | None = None) -> str | None:
+    """Which invalidator fired, or None (addendum 0.2, ruling B-I2; 6D.1 1.8(e)).
 
     Three, and only three: the game's ESPN status changed, a new weather snapshot landed for the
     game, or the sharp fair moved by `FAIR_MOVE_INVALIDATOR`. D21 removed the fourth -- the
     injury-status change of section 7.1 -- with the injury feed it depended on.
+
+    **A cached context also has an age** (6D.1 1.8(e)). `cached_at` is the instant the cached
+    context was frozen and `as_of` the instant the context being decided was frozen; when the
+    gap between them has passed a key's `VALIDITY_WINDOWS` entry, that key's own label is
+    returned -- the cached context for it is no longer valid. A same-key resting order is
+    evidence of repeated context, not an unconditional reason to suppress new news. Both
+    arguments default to `None`, which is the pre-6D.1 behaviour byte for byte: a delta, or
+    nothing.
+
+    A **delta beats an age**: the three comparisons are made first, so a fair move at or above
+    `FAIR_MOVE_INVALIDATOR` inside its window is still `"fair_move"` and a changed status is
+    still `"espn_status"`, whatever the clock says. An expiry never invents a fourth label.
     """
     if trigger.get("espn_status") != other.get("espn_status"):
         return "espn_status"
@@ -262,4 +326,4 @@ def invalidated(trigger: dict, other: dict) -> str | None:
     before, after = _decimal(trigger.get("fair_p")), _decimal(other.get("fair_p"))
     if before is not None and after is not None and abs(after - before) >= FAIR_MOVE_INVALIDATOR:
         return "fair_move"
-    return None
+    return _elapsed(cached_at, as_of)

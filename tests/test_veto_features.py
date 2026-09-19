@@ -5,9 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from harness.research.features import (BUCKET_MINUTES, ESPN_STATUSES, FAIR_MOVE_INVALIDATOR,
-                                       FEATURE_WINDOW, build_features, feature_delta,
-                                       invalidated)
+from harness.research.features import (BUCKET_MINUTES, ESPN_POLL_S, ESPN_STATUSES,
+                                       FAIR_MOVE_INVALIDATOR, FEATURE_WINDOW,
+                                       VALIDITY_WINDOWS, WEATHER_REFETCH, build_features,
+                                       feature_delta, invalidated)
 from tests.veto_fixtures import seed_game, seed_history, seed_signal, seed_weather
 
 SIGNAL_AT = datetime(2026, 9, 19, 22, 0, tzinfo=timezone.utc)
@@ -169,3 +170,90 @@ def test_nothing_moving_does_not_invalidate():
 def test_a_missing_fair_never_invalidates():
     """A null fair on either side is not a two-point move; it is no measurement."""
     assert invalidated(_features(), _features(fair_p=None)) is None
+
+
+# --- 6D.1 1.8(e): one explicit validity window per invalidator key -----------------------------
+
+def test_every_invalidator_key_has_its_own_named_window():
+    """1.8(e): a window **per key**, and exactly the three keys the three labels come from."""
+    assert set(VALIDITY_WINDOWS) == {"espn_status", "weather", "fair_move"}
+    assert VALIDITY_WINDOWS["espn_status"] == timedelta(seconds=ESPN_POLL_S)
+    assert VALIDITY_WINDOWS["weather"] == WEATHER_REFETCH
+    assert VALIDITY_WINDOWS["fair_move"] == FEATURE_WINDOW
+    # Derived, not invented: 900 s, one hour and six hours, in the order they are tested in.
+    assert [int(w.total_seconds()) for w in VALIDITY_WINDOWS.values()] == [900, 3600, 21_600]
+
+
+def test_the_windows_are_the_cadences_the_harness_already_runs_on():
+    """Each window's source, asserted rather than described (brief rule 2).
+
+    `espn_status` is the recorder's own scoreboard cadence, `weather` is the weather source's
+    own refetch interval, and `fair_move` is the fair history the vector is built over.
+    """
+    from pathlib import Path
+
+    from harness.recorder import tick
+    from harness.weather.snapshots import REFETCH_AFTER
+
+    assert WEATHER_REFETCH == REFETCH_AFTER
+    source = Path(tick.__file__).read_text()
+    assert "self._due(store.get_source_state(session, key), now, 900)" in source
+    assert VALIDITY_WINDOWS["espn_status"] == timedelta(seconds=900)
+
+
+def test_a_cache_older_than_the_espn_window_returns_that_keys_label():
+    """(a) Identical features, an elapsed window: the cached context for that key is no longer
+    valid, and the label is the key's own so `veto_decisions.reason_code` keeps its vocabulary."""
+    stale = SIGNAL_AT + VALIDITY_WINDOWS["espn_status"] + timedelta(seconds=1)
+    assert invalidated(_features(), _features(), cached_at=SIGNAL_AT, as_of=stale) == "espn_status"
+    # At the window exactly, the next poll is due and the cached context has elapsed with it.
+    at_the_window = SIGNAL_AT + VALIDITY_WINDOWS["espn_status"]
+    assert invalidated(_features(), _features(), cached_at=SIGNAL_AT,
+                       as_of=at_the_window) == "espn_status"
+    assert invalidated(_features(), _features()) is None          # the default path, unchanged
+
+
+def test_inside_every_window_identical_features_do_not_invalidate():
+    """(b) A cache inside every one of the three windows is still valid: no call, no label."""
+    inside = SIGNAL_AT + min(VALIDITY_WINDOWS.values()) - timedelta(seconds=1)
+    assert all(inside - SIGNAL_AT < window for window in VALIDITY_WINDOWS.values())
+    assert invalidated(_features(), _features(), cached_at=SIGNAL_AT, as_of=inside) is None
+    # And the shortest elapsed window is the one that names the decision, so the label is
+    # deterministic when more than one has run out.
+    long_gone = SIGNAL_AT + max(VALIDITY_WINDOWS.values()) + timedelta(hours=1)
+    shortest = min(VALIDITY_WINDOWS, key=lambda key: VALIDITY_WINDOWS[key])
+    assert invalidated(_features(), _features(), cached_at=SIGNAL_AT, as_of=long_gone) == shortest
+
+
+def test_a_fair_move_at_the_threshold_beats_the_age_of_the_cache():
+    """(c) 0.02 is news whatever the clock says, and an expired cache never turns a moved fair
+    into a different label: the delta is tested first and wins."""
+    inside = SIGNAL_AT + timedelta(minutes=1)
+    stale = SIGNAL_AT + VALIDITY_WINDOWS["espn_status"] + timedelta(minutes=5)
+    moved = _features(fair_p=0.5300)                  # exactly FAIR_MOVE_INVALIDATOR away
+    assert invalidated(_features(), moved, cached_at=SIGNAL_AT, as_of=inside) == "fair_move"
+    assert invalidated(_features(), moved, cached_at=SIGNAL_AT, as_of=stale) == "fair_move"
+    # A changed status inside its own window is still the status change, not an expiry.
+    assert invalidated(_features(), _features(espn_status="in_progress"),
+                       cached_at=SIGNAL_AT, as_of=inside) == "espn_status"
+
+
+def test_the_omitted_cached_at_path_is_todays_behaviour_exactly():
+    """(d) With the two timestamps omitted -- and with either one of them missing -- the answer
+    is the delta-based one on every existing fixture, byte for byte."""
+    ancient = SIGNAL_AT - timedelta(days=7)
+    pairs = ((_features(), _features()),
+             (_features(), _features(minutes_to_kickoff=178)),
+             (_features(), _features(fair_p=0.5301)),
+             (_features(), _features(fair_p=0.5299)),
+             (_features(), _features(fair_p=0.4899)),
+             (_features(), _features(fair_p=None)),
+             (_features(), _features(espn_status="in_progress")),
+             (_features(weather_fetched_at="2026-09-19T21:00:00+00:00"),
+              _features(weather_fetched_at="2026-09-19T21:30:00+00:00")))
+    for trigger, other in pairs:
+        today = invalidated(trigger, other)
+        assert invalidated(trigger, other, cached_at=None, as_of=None) == today
+        # One timestamp alone is no age at all, so a caller that has only one gets today's path.
+        assert invalidated(trigger, other, cached_at=ancient) == today
+        assert invalidated(trigger, other, as_of=SIGNAL_AT) == today

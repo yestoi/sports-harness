@@ -411,6 +411,53 @@ def _check_resume(stored_hash: str, manifest) -> None:
     check_resume(stored_hash, manifest)
 
 
+#: G2/1.9(a): the arm's own orders for this run, closed and open, in the shape
+#: `outcomes.record_outcomes` reads them. `exp_order` keeps no fill instant of its own (2: the
+#: lifecycle columns are `placed_at`, `expiry`, `cancelled_at`), so the entry instant is the
+#: **first** fill of the order -- the price the markouts are measured from is the order's own
+#: `prob`, which is what T4's schedule defines the outcome against. An order that never filled
+#: carries a null and `record_outcomes` skips it rather than recording a missing outcome for it.
+#: `ix_exp_order_run_arm (run_id, arm_id, placed_at)` bounds the scan to this run's arm.
+_ARM_ORDERS = text(
+    "select o.id, o.venue_market_id, o.side, o.prob, "
+    "(select min(f.filled_at) from exp_fill f where f.run_id = o.run_id "
+    " and f.arm_id = o.arm_id and f.exp_order_id = o.id) as filled_at "
+    "from exp_order o where o.run_id = :r and o.arm_id = :a order by o.id")
+
+#: What this run's arm has already recorded. `exp_outcome` has no unique key to upsert on (2:
+#: its only constraint is the surrogate primary key) and this task adds no DDL, so idempotence
+#: across a resumed run is a read of the pairs already present: a `(exp_order_id, horizon)` that
+#: is there is not written again, and every write still goes through T1's writer alone.
+_RECORDED_OUTCOMES = text(
+    "select exp_order_id, horizon from exp_outcome where run_id = :r and arm_id = :a")
+
+
+def _record_run_outcomes(session, writer, *, run_id: str, arm_id: str, orders: list[dict],
+                         until: datetime, batch_rows: int) -> list[dict]:
+    """1.9(a)'s rows for this run's orders, idempotently and through the writer alone.
+
+    Orders are grouped by the horizons still missing for them -- at most one group per subset of
+    `outcomes.HORIZONS` -- and each group is written in slices no wider than the writer's own
+    `exp_batch_rows` bound (4.3), so one `record_outcomes` call can never exceed it. The rows
+    returned are the ones **this** invocation recorded, which is what the summary line counts.
+    """
+    recorded = {(row.exp_order_id, row.horizon) for row in
+                session.execute(_RECORDED_OUTCOMES, {"r": run_id, "a": arm_id})}
+    groups: dict[tuple, list[dict]] = {}
+    for order in orders:
+        missing = tuple(h for h in outcomes.HORIZONS if (order["id"], h) not in recorded)
+        if missing:
+            groups.setdefault(missing, []).append(order)
+    rows: list[dict] = []
+    for horizons, group in groups.items():
+        size = max(1, batch_rows // len(horizons))
+        for start in range(0, len(group), size):
+            rows += outcomes.record_outcomes(session, writer, run_id=run_id, arm_id=arm_id,
+                                             orders=group[start:start + size], now=until,
+                                             horizons=horizons)
+    return rows
+
+
 @exp_app.command("run")
 def run_cmd(run_id: str = typer.Option(..., "--run-id"),
             arm: str = typer.Option("A", "--arm"),
@@ -493,6 +540,18 @@ def run_cmd(run_id: str = typer.Option(..., "--run-id"),
                 since=since, until=until, chunk=timedelta(hours=chunk_hours),
                 mismatch_max=s.exp_mismatch_max,
                 busy=lambda: capture._yield_if_executor_busy(session, s))
+            # G2 (1.9(a), ruling C2): the run's own outcomes, on the **common** schedule and
+            # inside the writer's lifetime. `now=until` is the window's end, never the wall
+            # clock, so a horizon later than the window is censored rather than measured
+            # against a market the run never observed. The orders are read from `exp_order`
+            # (closed and open) and every outcome from the capture's own tables inside
+            # `record_outcomes`, so the lookahead guard is respected.
+            arm_orders = [dict(row) for row in
+                          session.execute(_ARM_ORDERS, {"r": run_id, "a": arm}).mappings()]
+            recorded = _record_run_outcomes(session, writer, run_id=run_id, arm_id=arm,
+                                            orders=arm_orders, until=until,
+                                            batch_rows=s.exp_batch_rows)
+            writer.commit()
         finally:
             writer.close()
     chunks = result.chunks
@@ -505,6 +564,12 @@ def run_cmd(run_id: str = typer.Option(..., "--run-id"),
     print(f"  open at the end            {chunks[-1].open_orders if chunks else 0}")
     if result.stopped:
         print(f"  stopped                    {result.stopped}")
+    # 1.9(a)'s three statuses, kept apart in the line as they are kept apart in the table: a
+    # censored horizon has not arrived, a missing one was unobservable and named why.
+    censored = sum(1 for row in recorded if row["status"] == "censored")
+    missing = sum(1 for row in recorded if row["status"] == "missing")
+    print(f"  outcomes recorded          {len(recorded)} "
+          f"(censored {censored}, missing {missing})")
 
 
 #: §1.9(d)'s per-arm, per-portfolio rows, on `ix_exp_order_run_arm (run_id, arm_id, placed_at)`:

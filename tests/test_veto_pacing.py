@@ -20,7 +20,7 @@ from harness.experiments.execution_viability import cli as exp_cli
 from harness.experiments.execution_viability.cli import exp_app
 from harness.experiments.execution_viability.manifest import canonical_json
 from harness.research import pacing, veto
-from harness.research.features import invalidated
+from harness.research.features import VALIDITY_WINDOWS, invalidated
 from harness.research.spend import BudgetRefused, reserve_spend, worst_case_usd
 from harness.weeks import chicago_day
 from tests.veto_fixtures import enqueue, seed_game, seed_signal
@@ -370,3 +370,77 @@ def test_the_command_prints_the_profile_and_the_question_and_activates_nothing()
         body = Path(module.__file__).read_text()
         assert "veto_pacing_profile =" not in body          # no assignment
         assert "setattr(" not in body                       # and no indirect one
+
+
+# --- 1.8(e): the cache's validity window in the sweep ------------------------------------------
+
+def _expired_cache_bucket(session):
+    """Two signals of one bucket, twenty minutes apart, with identical features.
+
+    Twenty minutes is past `VALIDITY_WINDOWS["espn_status"]` (900 s) and inside the other two,
+    and nothing the three invalidator keys read has moved between them: no fair values at all
+    (so `fair_p` is the signal's own and equal), one score event before both, no weather. The
+    only thing that separates the second signal from the trigger's cached context is its age.
+    """
+    bucket = NOW - timedelta(minutes=30)
+    game, market = seed_game(session, kickoff=NOW + timedelta(hours=3),
+                             score_status="scheduled", score_ts=bucket - timedelta(hours=1))
+    signals = [seed_signal(session, market=market, created_at=bucket),
+               seed_signal(session, market=market, created_at=bucket + timedelta(minutes=20))]
+    for signal in signals:
+        enqueue(session, signal=signal, game=game, bucket_start=bucket,
+                enqueued_at=signal.created_at)
+    session.commit()
+    return [signal.id for signal in signals]
+
+
+def _decisions(session):
+    return session.execute(text(
+        "select signal_id, decision, from_cache, reason_code, feature_delta, call_id "
+        "from veto_decisions order by signal_id")).all()
+
+
+def test_an_expired_cache_forces_a_call_and_records_the_window_it_left(db_session, env_settings):
+    """1.8(e): new material information bypasses the cached context, and so does a context
+    that has simply run out: the second signal gets its own call, not the trigger's answer."""
+    from tests.test_veto_worker import FakeClient
+
+    ids = _expired_cache_bucket(db_session)
+    client = FakeClient()
+    counts = veto.veto_pass(db_session, NOW, env_settings, client=client)
+    assert counts["calls"] == 2 and counts["decided"] == 2
+    rows = _decisions(db_session)
+    assert [row.signal_id for row in rows] == ids
+    assert [row.from_cache for row in rows] == [False, False]
+    assert rows[1].reason_code == "espn_status"          # the key's own label, not a new one
+    assert rows[1].feature_delta == {"expired": "espn_status", "window_s": 900}
+    assert int(VALIDITY_WINDOWS["espn_status"].total_seconds()) == 900
+    assert rows[0].call_id != rows[1].call_id            # two paired calls, two call ids
+    assert len(client.calls) == 4                        # primary and shadow, twice
+
+
+def test_the_same_sweep_under_an_exhausted_cap_writes_the_caps_reason_code(db_session,
+                                                                           env_settings):
+    """The reservation is unchanged: an expiry-forced call goes through `reserve_spend` like
+    any other and is refused with the existing cap code when the day is gone (brief rule 4).
+
+    The day is settled to exactly one paired call short of the $25 cap, so the trigger's call
+    fits and the expiry-forced one does not: what the second signal gets is `veto_skipped_budget`
+    with `daily`, never a call and never the window's key.
+    """
+    from harness.research.client import PRIMARY_MODEL, SHADOW_MODEL
+    from tests.test_veto_worker import FakeClient
+
+    ids = _expired_cache_bucket(db_session)
+    pair = sum((worst_case_usd(model, env_settings.veto_max_searches)
+                for model in (PRIMARY_MODEL, SHADOW_MODEL)), Decimal("0"))
+    _settled(db_session, chicago_day(NOW), env_settings.veto_daily_usd_cap - pair)
+    client = FakeClient()
+    counts = veto.veto_pass(db_session, NOW, env_settings, client=client)
+    assert (counts["calls"], counts["skipped_budget"]) == (1, 1)
+    rows = _decisions(db_session)
+    assert [row.signal_id for row in rows] == ids
+    assert rows[1].decision == "veto_skipped_budget"
+    assert rows[1].reason_code == "daily"                # the cap's code, not "espn_status"
+    assert rows[1].feature_delta == {} and rows[1].call_id is None
+    assert len(client.calls) == 2                        # one pair, not two
