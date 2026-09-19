@@ -3534,3 +3534,18 @@ User, verbatim (07:19 CT, in chat): "Read /home/trey/dev/sports/.superpowers/sdd
 - Dispatches: 0 new (batch 3 of 12; day 12).
 - Result: PASS (measurement complete; row 88 stays Open, cells updated with the numbers).
 - Next: reader's section 4, then a hotfix brief for the chosen lever with the §2.4 tests (counting, query-capture, shadow run); canary read 07:41 CT (aae03f46); full verify and daily line 09:01 CT (7d72d33d).
+
+## 302. hotfix - row 88 diagnosed: the residual per-row slot never advances (new row 89) - 2026-09-19 07:09-07:40 CT
+
+- Orient: hotfix (row 88 Open; batch `.superpowers/sdd/hotfix-2026-09-19-rulings/`, clock 06:44 CT).
+- Method: the opus reader resumed three times by SendMessage (report sections 4-6, no dispatches); after each, the controller ran its read-only queries against production (evidence parts 2-5 in `evidence/2026-09-19-row88-measurement.txt`). Long form with every number: `evidence/2026-09-19-row89-diagnosis.md`.
+- Refuted: queue-less or permanently-dirty owners (Q5), the session-boundary dirty verdict (Q8: 18 of 101 frozen tickers), rotation starvation (Q9: the walk never reaches its 2,000 ms budget and completes every clean ticker every loop), a broken resume position.
+- Mechanism (report §6, confirmed by Q10: `exec.per_row_n` = `exec.per_row_book_query` on all 139 samples): rows whose stored nw cursor differs from the live book head are refused the batched walk (`loop.py:1493-1497`) and fall to the residual per-row slot, which since fix 78 part 3 (eac4414, deployed 2026-09-16 14:35:36Z) serves rows in `orders.id` order from the top every loop (`loop.py:1123-1127`); the budget affords 17-51, so the same rows are served and ~20,000 (`exec.walk_deferred_n`) are never walked; their cursors froze at the last loop that served them.
+- Consequence: the record is not corrupted (no fill invented; `_expiring` rows walk ahead of the rotation and catch up at expiry), but interim `nw_*` readings since 2026-09-16 14:35Z are stale by up to three days for the affected rows and the stall is recorded nowhere: 6B/6D outputs over that period need the frozen-cursor list (Q1/Q3). Flagged to the user.
+- Sizing: 5,505 distinct (ticker, cursor) pairs over 29,618 rows (Q12); frozen tickers are not only the busy ones (Q13); holding the cohort's age steady needs about 17,200 delta applications a loop in a quiet hour (Q14), so whether L12 converges is measured after it ships.
+- Fix rows: row 89 Open (L12: a resume position for the residual slot, same 17-51 rows a loop, no new writes, no schema); row 88 stays Open behind it. L13 (row 86 (i)'s memo) and L14 (bound the live book at now: a placement-input change) recorded, not adopted.
+- Ruling: row 89 is built and reviewed now, released no earlier than Sunday's gap or Monday (298; value-path: which rows walk on which loop changes, no row's outcome does) - cost if wrong: a branch that waits.
+- Observations: the reader's untested candidate defect (a backed-off row handed a batch above its own cursor, report §4.4) needs a unit test before it is a row.
+- Dispatches: 0 new (batch 3 of 12; day 12).
+- Result: PASS (diagnosis complete, row 89 Open).
+- Next: canary 07:41 CT (aae03f46); row 89 brief and sonnet implementer in worktree fix-2026-09-19-residual-rotation; full verify and daily line 09:01 CT (7d72d33d).
