@@ -1,0 +1,15 @@
+Row 86 (item 23), the user's ruling 2026-09-19 06:04 CT (journal 297-298, relayed brief section B: evidence/2026-09-19-rulings-brief-sports-7a.md).
+
+(i) yes, next week's hotfix after the release, Change cell amended: memo keyed on (ticker, cursor) for `_sim_book` only,
+    `_pre_onset_walk` excluded (or keyed on the instant), handouts copied; query 6 runs first. Covering: the counting unit
+    test, the two-build scratch-restore replay with equality on every `nw_*` column, fills, ledger and dirty intervals,
+    and an explicit recorded acceptance that the memo narrows an existing READ COMMITTED nondeterminism.
+(ii) no. Row 86 moves to Watch with these answers:
+  Q1 coverage reading.
+  Q2 `expiry` (not `_nw_deadline`, which is value-changing).
+  Q3 counterfactual only.
+  Q4 carry the 5 s lookback margin.
+  Q5 measure first: a 24 h count of REST prints with no WS twin, then decide.
+  Q6 bounded away from row 72's ids.
+  Q7 a replay is not the instrument.
+Re-open (ii) only on a game-day loop breach attributable to an expired lagging cohort after (i) ships.

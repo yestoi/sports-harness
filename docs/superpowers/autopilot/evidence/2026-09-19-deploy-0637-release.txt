@@ -1,0 +1,98 @@
+start 06:34:35 CT
+{"sha": "01e7b0c", "previous": "4066197", "mode": "full", "services": ["app-run", "app-serve", "app-exec", "app-research", "app-ws"], "window": {"blocked": false, "nfl_blocked": false}, "full_paths": ["docker-compose.yml", "harness/db/engine.py", "harness/db/migrate.py", "harness/db/models.py", "harness/db/schema.py", "migrations/versions/0014_orders_intent_index.py", "migrations/versions/0015_phase6d1_exec_viability.py"]}
+[release] preparing
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Container sports-harness-app-run-run-abc6de59e5ad Creating 
+ Container sports-harness-app-run-run-abc6de59e5ad Created 
+ok backup_run=62 finished_at=2026-09-19 08:33:19+00:00
+[release] validated
+[release] stopping
+ Container sports-harness-app-exec-1 Stopping 
+ Container sports-harness-app-run-1 Stopping 
+ Container sports-harness-app-serve-1 Stopping 
+ Container sports-harness-app-research-1 Stopping 
+ Container sports-harness-app-ws-1 Stopping 
+ Container sports-harness-app-ws-1 Stopped 
+ Container sports-harness-app-serve-1 Stopped 
+ Container sports-harness-app-run-1 Stopped 
+ Container sports-harness-app-research-1 Stopped 
+ Container sports-harness-app-exec-1 Stopped 
+[release] draining
+[release] migrating
+ Container sports-harness-app-run-run-75e8c97bc94f Creating 
+ Container sports-harness-app-run-run-75e8c97bc94f Created 
+{"asctime": "2026-09-19 11:35:53,488", "levelname": "INFO", "name": "alembic.runtime.plugins", "message": "setup plugin alembic.autogenerate.schemas"}
+{"asctime": "2026-09-19 11:35:53,488", "levelname": "INFO", "name": "alembic.runtime.plugins", "message": "setup plugin alembic.autogenerate.tables"}
+{"asctime": "2026-09-19 11:35:53,488", "levelname": "INFO", "name": "alembic.runtime.plugins", "message": "setup plugin alembic.autogenerate.types"}
+{"asctime": "2026-09-19 11:35:53,488", "levelname": "INFO", "name": "alembic.runtime.plugins", "message": "setup plugin alembic.autogenerate.constraints"}
+{"asctime": "2026-09-19 11:35:53,488", "levelname": "INFO", "name": "alembic.runtime.plugins", "message": "setup plugin alembic.autogenerate.defaults"}
+{"asctime": "2026-09-19 11:35:53,488", "levelname": "INFO", "name": "alembic.runtime.plugins", "message": "setup plugin alembic.autogenerate.comments"}
+{"asctime": "2026-09-19 11:35:53,488", "levelname": "INFO", "name": "alembic.runtime.plugins", "message": "setup plugin alembic.ext.checkconstraint_byname"}
+{"asctime": "2026-09-19 11:35:53,584", "levelname": "INFO", "name": "alembic.runtime.migration", "message": "Context impl PostgresqlImpl."}
+{"asctime": "2026-09-19 11:35:53,584", "levelname": "INFO", "name": "alembic.runtime.migration", "message": "Will assume transactional DDL."}
+{"asctime": "2026-09-19 11:35:53,607", "levelname": "INFO", "name": "alembic.runtime.migration", "message": "Running upgrade 0013_nw_executor_version -> 0014_orders_intent_index, fix 85 (docket item 22, the user's ruling of 2026-09-18): `ix_orders_intent`"}
+{"asctime": "2026-09-19 11:35:54,978", "levelname": "INFO", "name": "alembic.runtime.migration", "message": "Running upgrade 0014_orders_intent_index -> 0015_phase6d1_exec_viability, phase 6D.1: the execution-viability experiment's eleven additive `exp_*` tables"}
+{"asctime": "2026-09-19 11:35:55,038", "levelname": "INFO", "name": "alembic.runtime.migration", "message": "Context impl PostgresqlImpl."}
+{"asctime": "2026-09-19 11:35:55,038", "levelname": "INFO", "name": "alembic.runtime.migration", "message": "Will assume transactional DDL."}
+current
+{"asctime": "2026-09-19 11:35:55,040", "levelname": "INFO", "name": "harness.db.migrate", "message": "alembic: at 0015_phase6d1_exec_viability"}
+ Container sports-harness-app-run-run-a6cb989d44f5 Creating 
+ Container sports-harness-app-run-run-a6cb989d44f5 Created 
+{"asctime": "2026-09-19 11:35:56,275", "levelname": "INFO", "name": "harness.db.schema", "message": "init-db: 135 no-op DDL statements skipped"}
+{"asctime": "2026-09-19 11:35:56,275", "levelname": "INFO", "name": "harness", "message": "schema created"}
+ Container sports-harness-app-run-run-2f571c200bab Creating 
+ Container sports-harness-app-run-run-2f571c200bab Created 
+added=0 unchanged=7 deactivated=0
+name                    tier        variant_id    active
+constrained             secondary   ff363c8ac08d  True
+nfl_only                secondary   e549e693e117  True
+no_velocity             secondary   64ba3ef09642  True
+sharp_direct            primary     f259ca109084  True
+sharp_plus_derived      secondary   49af716f8708  True
+sharp_two_sided         secondary   5632da729fa7  True
+wide_band               secondary   c2bc45377328  True
+ Container sports-harness-app-run-run-e5c8dc82c97e Creating 
+ Container sports-harness-app-run-run-e5c8dc82c97e Created 
+{"asctime": "2026-09-19 11:35:58,919", "levelname": "INFO", "name": "harness", "message": "seeded 32 teams from https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams?limit=100"}
+{"asctime": "2026-09-19 11:36:02,749", "levelname": "INFO", "name": "harness", "message": "seeded 762 teams from https://site.api.espn.com/apis/site/v2/sports/football/college-football/teams?limit=1000&groups=80"}
+{"asctime": "2026-09-19 11:36:02,775", "levelname": "INFO", "name": "harness", "message": "manual aliases loaded: 30"}
+[release] promoting
+ Container sports-harness-app-exec-1 Recreate 
+ Container sports-harness-app-serve-1 Recreate 
+ Container sports-harness-app-research-1 Recreate 
+ Container sports-harness-app-ws-1 Recreate 
+ Container sports-harness-app-run-1 Recreate 
+ Container sports-harness-app-exec-1 Recreated 
+ Container sports-harness-app-serve-1 Recreated 
+ Container sports-harness-app-research-1 Recreated 
+ Container sports-harness-app-run-1 Recreated 
+ Container sports-harness-app-ws-1 Recreated 
+ Container sports-harness-app-research-1 Starting 
+ Container sports-harness-app-run-1 Starting 
+ Container sports-harness-app-ws-1 Starting 
+ Container sports-harness-app-serve-1 Starting 
+ Container sports-harness-app-exec-1 Starting 
+ Container sports-harness-app-research-1 Started 
+ Container sports-harness-app-run-1 Started 
+ Container sports-harness-app-ws-1 Started 
+ Container sports-harness-app-serve-1 Started 
+ Container sports-harness-app-exec-1 Started 
+[release] checking
+[release] healthy
+exit 0
+end 06:37:09 CT
