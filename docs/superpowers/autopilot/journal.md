@@ -3447,3 +3447,18 @@ User, verbatim (07:19 CT, in chat): "Read /home/trey/dev/sports/.superpowers/sdd
 - Dispatches: 0. Verify unit 18:25-19:38 CT (two reads).
 - Result: PASS on every window row read tonight (6B §3, 6D stage costs, fills AFTER half with no step-down); loop-metrics row FAIL stands by ruling 263; 6D row 2 FAIL stands (journal 293); page_time FAIL on two of four runs at load, ruled a point measurement.
 - Next: 6D.1 T3 report consumption (DONE_WITH_CONCERNS arrived 19:37 CT); NCAAF 550 at 21:30 CT needs no read (journal 263 named the 18:30 window); next timed duty Sat 09:00 CT row 86 (the user).
+
+## 295. phase - 6D.1 execution viability done: ten tasks merged and archived - 2026-09-19 01:53 CT
+- Orient: rule 5 under U10 (journal 292); this entry closes the unit opened there (15:31 CT Sep 18).
+- Branch / commits: phase6d1-execution-viability 60dd46a..88490e1 (rebased onto main, no overlapping files; T1, T5, T6, T2, T3, T4, T7, T8, T6b, T9, final fix wave, archive; 62 code/docs files, 23 commits) ff-merged to main
+- Result: done (deploy gated: journal 284 item 24; 6D.1 rides the next full release)
+- Dispatches: 33 (impl/review/re-review; day counters in state.md)
+- Tests: 4533 passed, 1 skipped (T1's ruled role-creation skip), pristine on 5008178 (code tree identical after the rebase; scratchpad final-full-5008178.log)
+- Review: per-task reviews clean after fix rounds (T2 1, T3 1, T4 1, T7 1, T8 2, T9 1, T6b 0; T1/T5/T6 per the ledger); final whole-branch review 0C/2I/5M, one fix wave (opus, D49) + one add-on (D50), re-review clean; parked: M20 (exp_observation index, DDL, the user's), M13 (fourth censor reason, the user's), M23 (pacing.py near_kickoff docstring, cosmetic)
+- Deploy: none (§4.7 CREATE ROLE and secret, §4.6 activation checklist and §0.14a-c are the user's)
+- Verification: not run (verify.md gains the "Phase 6D.1 additions" block; rows read after release; row 1 asserts exp report's capture re-hash)
+- Rulings: D1-D52, exhaustive in docs/superpowers/reviews/2026-09-19-phase6d1-sdd-ledger.md; operational: D9 migration 0015; D13/D32 plan gaps G1, G2 as T6b; D27 arm C rows are exp_observation source='exp_observer'; D31 per-sport arm B runs; D37 the dated decision report is rendered on the harness database after release, its first EXP_LABEL line dropped when placed; D40 T9 in parallel; D43 validity age between the two signals' frozen as-ofs; D47 the §1.8(e) expiry ships dormant behind veto_pacing_profile; D48 weather/fair_move windows unreachable under the 30-min bucket; D51 exp report re-hashes on every run and fails closed without the grant on a mismatch; D52 M18 restated (exp decide's three production reads are variant-bounded all-time per §1.10)
+- Spec defects for the user (no code change): §2 exp_limitation scope-is-null clause; §3 row 2 positions vs ledger; §1.9(e) EXP_LABEL naming; §1.8(e) two unreachable windows; §0.8 boundary for the expiry (dormant, D47); §4.3 quiet-window wording; §3 row 4 stale projection; §2 exp_observation index; D29 corpus claim; D33 re-serialised body; T3 exp_order column drift
+- Carried forward: none to fixes.md; user-side TODOs unchanged (§4.7, §4.6, §0.14a-c, M20)
+- Anomalies: none. Instruction-like data: none reported by any worker.
+- Next: Orient from the top (deploy gated on item 24); next timed duty Sat 09:00 CT row 86 (the user); wakeup none
