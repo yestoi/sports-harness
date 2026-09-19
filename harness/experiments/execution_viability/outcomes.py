@@ -27,7 +27,9 @@ from decimal import Decimal
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from harness.config.settings import Settings
 from harness.execution.book import side_p
+from harness.pricing.fair import FEATURED_CADENCE_S
 
 log = logging.getLogger("harness.exp")
 
@@ -43,9 +45,12 @@ MISSING_REASONS: tuple[str, ...] = ("no_mid_at_horizon", "book_absent", "market_
 STATUSES: tuple[str, ...] = ("matured", "censored", "missing")
 
 #: How old a quote may be and still be *this horizon's* mid: the same pricing-time allowance
-#: arm A decides under (`FEATURED_CADENCE_S = 120` plus `Settings.tick_budget_s = 100`). Older
-#: than that, the quote is a forward fill and §1.9(a) refuses to read it as contemporaneous.
-MID_MAX_AGE_S = 220
+#: arm A decides under, **derived** from the two production constants it is made of rather than
+#: restated, so a settings change cannot leave the forward-fill refusal quietly wrong. Older
+#: than this, the quote is a forward fill and §1.9(a) refuses to read it as contemporaneous.
+#: The declared default is read, not a live `Settings()`: this is the schedule the outcome
+#: table is defined on, and it may not vary with one deployment's environment file.
+MID_MAX_AGE_S = FEATURED_CADENCE_S + int(Settings.model_fields["tick_budget_s"].default)
 
 #: The newest quote at or before the horizon, on the market's own index
 #: `ix_quotes_market_fetched (venue_market_id, fetched_at)`.

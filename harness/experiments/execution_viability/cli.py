@@ -350,6 +350,51 @@ def baseline_check(run_id: str = typer.Option(..., "--run-id"),
                                    limitations=[spacing]))
 
 
+#: The sport the window's orders belong to, on the same access path the instants query uses
+#: (`ix_orders_key_placed`): `interval_for(sport, ...)` answers for **one** sport, so arm B's
+#: allowance may not be built for a window that resolves to two of them or to none.
+_RUN_SPORTS = text(
+    "select distinct sport from orders where variant_id = any(:variant_ids) "
+    "and placed_at >= :start and placed_at <= :end and replay = false "
+    "and sport is not null")
+
+
+def _window_sport(session, *, variant_ids: list[str], since: datetime, until: datetime) -> str:
+    """The one sport arm B's cadence is read against, or a refusal (§1.6a)."""
+    rows = session.execute(_RUN_SPORTS, {"variant_ids": list(variant_ids), "start": since,
+                                         "end": until}).scalars().all()
+    sports = sorted({row for row in rows if row})
+    if len(sports) != 1:
+        named = ", ".join(sports) if sports else "no sport at all"
+        raise typer.BadParameter(
+            f"arm B's allowance is derived per sport and this window resolves to {named}: "
+            "`interval_for(sport, now, kickoffs, tz)` answers for one sport, so a window that "
+            "crosses two -- or reconstructs none -- is refused rather than decided under a "
+            "guess (§1.6a)")
+    return sports[0]
+
+
+def _cadence_allowance(session, spec, s, *, variant_ids: list[str], since: datetime,
+                       until: datetime, window_start: datetime):
+    """§1.6(a)/M2: arm B's allowance, resolved for **this** run before the runner is built.
+
+    An arm whose policy declares no allowance (§1.6's arm A) gets `None` and is untouched. An
+    arm that declares one gets the run's own as-of kickoff reconstruction (ruling I3), this
+    deployment's tick budget and the capture window the walk-back may not leave -- so a run
+    labelled `B` can never quietly decide under arm A's rule, and a run that could not build
+    the allowance is refused here rather than stepped.
+    """
+    if spec.policy.cadence_allowance is None:
+        return None
+    sport = _window_sport(session, variant_ids=variant_ids, since=since, until=until)
+    return arms.cadence_allowance_for(
+        sport,
+        lambda at: capture.kickoffs_asof(session, at=at, sport=sport,
+                                         variant_ids=list(variant_ids), since=window_start),
+        s.tz_local, tick_budget_s=s.tick_budget_s, exec_period_s=s.exec_period_s,
+        window_start=window_start)
+
+
 #: The run's frozen manifest and its hash, on `exp_run`'s own primary key `run_id` (§4.1): one
 #: row, one index lookup, no scan. The resume point itself is read by `storage.resume`, which
 #: is the only reader of `exp_checkpoint` (§1.2's refusal happens there and nowhere else).
@@ -386,6 +431,14 @@ def run_cmd(run_id: str = typer.Option(..., "--run-id"),
     variant_ids = [v.strip() for v in variants.split(",") if v.strip()]
     if not variant_ids:
         raise typer.BadParameter("--variants takes a comma-separated list of variant ids")
+    # §1.6: the arm is one of the experiment's own, and it is stepped under **its** policy.
+    # An unknown arm id was previously accepted and silently stepped under the baseline, which
+    # would have written `exp_order` rows labelled with an arm nobody defined.
+    spec = arms.ARMS.get(arm)
+    if spec is None:
+        raise typer.BadParameter(
+            f"--arm takes one of §1.6's arms ({', '.join(sorted(arms.ARMS))}); {arm!r} is not "
+            "one of them. Arm C is T7's and is deliberately absent until its preflight exists")
     # §0.6: the label first, after the arguments are validated and before any number.
     print(EXP_LABEL)
     s = get_settings()
@@ -415,10 +468,16 @@ def run_cmd(run_id: str = typer.Option(..., "--run-id"),
         _check_resume(row.manifest_hash, manifest)
         state = storage.resume(session, run_id=run_id, arm_id=arm, manifest=manifest)
         resumed = state is not None
-        runner = adapter.ArmRunner(run_id=run_id, arm_id=arm, policy=None,
+        # The walk-back may not leave the captured window, so the manifest's own warmup start
+        # is its floor -- not this invocation's `--since`, which a resumed chunk may move.
+        window_start = manifest.warmup_start or since
+        allowance = _cadence_allowance(session, spec, s, variant_ids=variant_ids, since=since,
+                                       until=until, window_start=window_start)
+        runner = adapter.ArmRunner(run_id=run_id, arm_id=arm, policy=spec.policy,
                                    variant_cfg=variant_cfg,
                                    exec_settings=exec_settings, walkers={},
-                                   tz=s.tz_local, ledger=liquidity.PortfolioLedger())
+                                   tz=s.tz_local, ledger=liquidity.PortfolioLedger(),
+                                   cadence_allowance=allowance)
         if state is not None:
             adapter.restore(runner, state)
         writer = storage.ExperimentWriter.open(s, run_id=run_id)
@@ -468,6 +527,24 @@ _REPORT_OUTCOMES = text(
     "from exp_outcome x join exp_order o on o.id = x.exp_order_id and o.run_id = x.run_id "
     "where x.run_id = :r group by 1, 2")
 
+#: §1.9(c)'s two sensitivities and the clustered interval's own inputs: **per order**, because
+#: a game-weighted or market-side-weighted number cannot be recovered from an average that has
+#: already been taken. One row per matured 30-minute outcome, with the game it belongs to
+#: (the cluster) and the market side it was placed on.
+_REPORT_OUTCOME_VALUES = text(
+    "select x.arm_id, o.variant_id as portfolio, o.venue_market_id, o.side, x.value, "
+    "vm.game_id from exp_outcome x "
+    "join exp_order o on o.id = x.exp_order_id and o.run_id = x.run_id "
+    "left join venue_markets vm on vm.id = o.venue_market_id "
+    "where x.run_id = :r and x.horizon = '1800' and x.value is not null")
+
+#: §1.9(c)'s denominators: the run's filled contracts (what a game's share is a share *of*)
+#: and the contracts its arms actually asked for (what the ledger's allocation is measured
+#: against). Both are one aggregate on `ix_exp_order_run_arm`.
+_REPORT_CONTRACTS = text(
+    "select coalesce(sum(filled_contracts), 0) as filled, "
+    "coalesce(sum(contracts), 0) as requested from exp_order where run_id = :r")
+
 #: §1.7's classifications, counted for the run: the three book-health counts the ops read-back
 #: records beside the instant count.
 _REPORT_HEALTH = text("select classification, count(*) as n from exp_book_health "
@@ -488,6 +565,28 @@ _REPORT_GAME_SHARE = text(
 _REPORT_ALLOCATION = text(
     "select coalesce(sum(allocated), 0) as allocated, coalesce(sum(available), 0) as available "
     "from exp_allocation where run_id = :r")
+
+
+def _game_of(row):
+    """The cluster a markout belongs to: its game, or the market itself when the tape kept no
+    game for it (§1.9c's clustering is by game, and an unknown game is not every other one)."""
+    return row.game_id if row.game_id is not None else ("market", row.venue_market_id)
+
+
+def _weighted(rows, key) -> str | None:
+    """A sensitivity: the mean of the per-group means (§1.9c).
+
+    Not the order-weighted mean -- that is the primary number, computed by the outcome query
+    itself. Grouping first is the whole point: one game with forty fills and one with two then
+    count once each.
+    """
+    if not rows:
+        return None
+    groups: dict = {}
+    for row in rows:
+        groups.setdefault(key(row), []).append(float(row.value))
+    means = [sum(values) / len(values) for values in groups.values()]
+    return f"{sum(means) / len(means):.6f}"
 
 
 @exp_app.command("report")
@@ -511,48 +610,77 @@ def report_cmd(run_id: str = typer.Option(..., "--run-id")) -> None:
             raise typer.BadParameter(
                 f"no exp_run row for {run_id}: a report is rendered for a frozen run (§1.2)")
         arms_rows = session.execute(_REPORT_ARMS, {"r": run_id}).all()
-        outcomes = {(row.arm_id, row.portfolio): row
-                    for row in session.execute(_REPORT_OUTCOMES, {"r": run_id}).all()}
+        outcome_rows = {(row.arm_id, row.portfolio): row
+                        for row in session.execute(_REPORT_OUTCOMES, {"r": run_id}).all()}
+        per_order = session.execute(_REPORT_OUTCOME_VALUES, {"r": run_id}).all()
         health = session.execute(_REPORT_HEALTH, {"r": run_id}).all()
         scope = session.execute(_REPORT_SPACING, {"r": run_id}).scalar() or {}
         share = session.execute(_REPORT_GAME_SHARE, {"r": run_id}).first()
+        totals = session.execute(_REPORT_CONTRACTS, {"r": run_id}).first()
         allocation = session.execute(_REPORT_ALLOCATION, {"r": run_id}).first()
+    buckets: dict[tuple, list] = {}
+    for row in per_order:
+        buckets.setdefault((row.arm_id, row.portfolio), []).append(row)
     rows = []
     for row in arms_rows:
-        outcome = outcomes.get((row.arm_id, row.portfolio))
+        outcome = outcome_rows.get((row.arm_id, row.portfolio))
+        bucket = buckets.get((row.arm_id, row.portfolio), [])
         rows.append({
             "arm_id": row.arm_id, "portfolio": row.portfolio, "orders": row.orders,
             "fills": row.fills, "markets": row.markets, "partial_fills": row.partial_fills,
             "contracts": row.contracts, "capacity_exclusions": row.capacity_exclusions,
             "markout_1800": None if outcome is None else outcome.markout_1800,
+            "markout_1800_game": _weighted(bucket, _game_of),
+            "markout_1800_market_side": _weighted(bucket, lambda r: (r.venue_market_id, r.side)),
+            # `cluster_ci`'s own inputs, per order and unaggregated: the value and the game it
+            # belongs to. A market with no game clusters on itself rather than pooling every
+            # unknown game into one cluster, which would understate the interval.
+            "values": [float(r.value) for r in bucket],
+            "clusters": [_game_of(r) for r in bucket],
             "source_age_s": None if outcome is None else outcome.source_age_s,
             "censored": None if outcome is None else outcome.censored,
             "missing": None if outcome is None else outcome.missing,
             "registered": False})
+    filled = totals.filled if totals is not None else 0
+    requested = totals.requested if totals is not None else 0
     concentration = {
         "maximum contribution by game": (
-            f"game {share.game_id}: {share.contracts} contracts" if share is not None
-            else "no filled contracts in this run"),
-        "allocated against observed print volume": (
-            f"{allocation.allocated} of {allocation.available} contracts"
+            f"game {share.game_id}: {share.contracts} of {filled} filled contracts"
+            if share is not None else "no filled contracts in this run"),
+        "allocated against requested": (
+            f"{allocation.allocated} of {requested} contracts requested "
+            f"({allocation.available} observed available)"
             if allocation is not None else "no allocation rows")}
+    # §1.9(c): when the common outcome schedule has written nothing for this run, the two
+    # sensitivities and the interval are *absent*, and the report says so in one line rather
+    # than printing three dashes a reader has to interpret.
+    notes = []
+    if not per_order:
+        notes.append(
+            f"sensitivities: not supplied (no exp_outcome rows for run {run_id}); the "
+            "game-weighted and market-side-weighted markouts and the game-clustered interval "
+            "are computed from exp_outcome joined to exp_order, and nothing has recorded this "
+            "run's outcomes yet (§1.9a).")
+    cadence = ((run.manifest or {}).get("opportunity_definition") or {}).get("cadence_in_force")
     print(report.render(
         [], rows, run_id=run_id, manifest_hash=run.manifest_hash,
         concentration=concentration, instants=scope.get("instants"),
-        live_loop_estimate=scope.get("live_loop_estimate")))
+        live_loop_estimate=scope.get("live_loop_estimate"),
+        cadence_in_force=cadence, notes=notes))
     # §1.7's counts, printed beside the run's own instants: the ops read-back records these
     # three numbers the first time this command is run by hand.
     print(f"book health classifications ({len(health)}):")
     for row in health:
         print(f"  {row.classification:<24} {row.n}")
     # §1.9(a): the one schedule every arm's numbers were computed on, named in the output so a
-    # reader never has to infer which horizons a blank cell belongs to.
+    # reader never has to infer which horizons a blank cell belongs to. `outcomes` here is the
+    # **module** -- the local that used to shadow it inside this function is `outcome_rows`.
     print(f"common outcome schedule: {', '.join(outcomes.HORIZONS)} "
           f"(missing reasons: {', '.join(outcomes.MISSING_REASONS)})")
-    cadence = ((run.manifest or {}).get("opportunity_definition") or {}).get("cadence_in_force")
-    if cadence:
-        print(f"episode gap rule at the run's cadence ({cadence} s): "
-              f"{episodes.gap_rule_s(int(cadence))} s")
+    # The episode vocabulary §1.9(b)'s rule is written in; its parameters are printed above the
+    # tables, where the rule itself is.
+    print(f"episode sighting kinds: {episodes.CANDIDATE}, {episodes.CANCEL}, "
+          f"{episodes.RE_ENTRY} (floor {episodes.GAP_FLOOR_S} s)")
     # §1.6(c): the distinctions each arm decided under, with the hash the manifest froze them
     # at, so a note cannot be dropped between the run and its report.
     for arm_id in sorted({row["arm_id"] for row in rows}):

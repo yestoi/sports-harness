@@ -21,6 +21,7 @@ import math
 from collections.abc import Iterable, Sequence
 
 from harness.experiments.execution_viability import exp_label
+from harness.experiments.execution_viability.episodes import gap_rule_s
 from harness.report.stats import cluster_ci
 
 #: The confidence level §1.9(c) fixes, passed to `cluster_ci` unchanged.
@@ -76,6 +77,9 @@ EPISODE_RULE = (
     "re-entry after a cancel inside the hole is the same episode.")
 
 _MISSING = "-"
+
+#: The title of the cell every exploratory row ends with (§0.10, §1.9e).
+LABEL_COLUMN = "exploratory label"
 
 
 def _identity(row) -> tuple:
@@ -136,13 +140,20 @@ def arm_table(rows: Iterable[dict], *, run_id: str, manifest_hash: str,
     labelled whatever the flag says.
     """
     rows = list(rows)
-    header = " | ".join(title for _key, title in COLUMNS)
+    flags = [exploratory if exploratory is not None else not row.get("registered", False)
+             for row in rows]
+    titles = [title for _key, title in COLUMNS]
+    # The label is a **column**, not an extra cell nobody titled: a row one field wider than its
+    # header is unreadable, and §1.9(e)'s requirement is that the label travel on the row.
+    if any(flags):
+        titles.append(LABEL_COLUMN)
+    header = " | ".join(titles)
     lines = [header, "-" * len(header)]
-    for row in rows:
+    for row, labelled in zip(rows, flags):
         cells = [_cell(row, key) for key, _title in COLUMNS]
-        labelled = exploratory if exploratory is not None else not row.get("registered", False)
-        if labelled:
-            cells.append(exp_label(run_id, str(row.get("arm_id")), manifest_hash))
+        if any(flags):
+            cells.append(exp_label(run_id, str(row.get("arm_id")), manifest_hash)
+                         if labelled else _MISSING)
         lines.append(" | ".join(cells))
     return "\n".join(lines)
 
@@ -150,20 +161,31 @@ def arm_table(rows: Iterable[dict], *, run_id: str, manifest_hash: str,
 def render(registered: Iterable[dict], exploratory: Iterable[dict], *, run_id: str,
            manifest_hash: str, concentration: dict | None = None,
            charter: Sequence[str] | None = None, instants: int | None = None,
-           live_loop_estimate: int | None = None) -> str:
+           live_loop_estimate: int | None = None, cadence_in_force: int | None = None,
+           notes: Sequence[str] | None = None) -> str:
     """The whole report: the rule first, then the two tables, then the charter status.
 
-    `instants` and `live_loop_estimate` are ruling C1's pair -- the resolved instant count is
-    meaningless without the live loop estimate beside it -- and `concentration` is §1.9(c)'s
-    maximum contribution by game and the allocation ledger's allocated-against-requested
-    contracts. A run that supplied none of them prints that it did not; none of the three is
-    ever silently absent.
+    `cadence_in_force` is the rule's **parameter** (§1.9b): the formula alone is not the rule
+    this run cut its episodes with, so the instantiated `gap_rule_s` is printed beside it and
+    before any arm outcome. `instants` and `live_loop_estimate` are ruling C1's pair -- the
+    resolved instant count is meaningless without the live loop estimate beside it -- and
+    `concentration` is §1.9(c)'s maximum contribution by game and the allocation ledger's
+    allocated-against-requested contracts. `notes` carries anything the caller could not
+    compute, stated rather than left as a dash. A run that supplied none of them prints that it
+    did not; none of them is ever silently absent.
     """
     out: list[str] = [
         f"6D.1 execution viability, run={run_id} manifest={manifest_hash[:12]}",
         "",
         EPISODE_RULE,
     ]
+    if cadence_in_force:
+        out.append(f"Episode rule parameters: cadence in force {int(cadence_in_force)} s, so "
+                   f"gap_rule_s = {gap_rule_s(int(cadence_in_force))} s for this run.")
+    else:
+        out.append("Episode rule parameters: not supplied for this render; the cadence in "
+                   "force and the gap_rule_s it produces are printed beside the rule and "
+                   "before any arm outcome.")
     if instants is None or live_loop_estimate is None:
         out.append("Resolved instants: not supplied for this render; the resolved instant "
                    "count is printed beside the live loop estimate (ruling C1).")
@@ -177,6 +199,8 @@ def render(registered: Iterable[dict], exploratory: Iterable[dict], *, run_id: s
         out.append("Concentration: not supplied for this render; the maximum contribution by "
                    "game and the allocated-against-requested contracts are printed beside "
                    "every result.")
+    for note in (notes or ()):
+        out.append(str(note))
     out += ["", "Registered results (recorded performance of registered variant ids)"]
     registered = list(registered)
     out.append(arm_table(registered, run_id=run_id, manifest_hash=manifest_hash,

@@ -22,9 +22,10 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from datetime import datetime, timedelta
 
+from harness.execution.plan import MarketNow
 from harness.execution.policy import BASELINE, HoldingPolicy
 from harness.experiments.execution_viability.manifest import canonical_json
 from harness.recorder.cadence import interval_for
@@ -32,7 +33,8 @@ from harness.recorder.cadence import interval_for
 #: `(MarketNow) -> int`: the allowance in whole seconds for the fair row that market carries.
 #: `policy.py` annotates its one field `Callable[..., int] | None` (plan choice 9) because a
 #: production module may not import this package; this is the narrower alias B is built against.
-CadenceAllowance = Callable[["object"], int]
+#: The import runs experiment -> production, which is the direction §0.9 allows.
+CadenceAllowance = Callable[[MarketNow], int]
 
 #: I4's fallback: an overnight row with no finite anchor inside the capture window takes the
 #: weekday off-window value and is **labelled**, so `exp_result` can count how much of B's
@@ -64,24 +66,39 @@ def _unbound(market) -> int:
 
 def _resolver(sport: str, kickoffs_at, tz, *, tick_budget_s: int, exec_period_s: int,
               window_start: datetime, interval_fn=interval_for):
-    """The one body `cadence_allowance_for` and `cadence_allowance_with_label` share."""
+    """The one body `cadence_allowance_for` and `cadence_allowance_with_label` share.
+
+    Memoised on `fair_ts`, which is the only input that varies: `_fair_stale` asks this
+    question for every resting order at every retained instant, and the real binding reads the
+    as-of kickoff snapshots from the database once per probe. Without the cache an overnight
+    row walks the whole capture window back on *every* evaluation; with it, each distinct fair
+    row is resolved once per run. The cache is bounded by the run's distinct `fair_ts` values
+    and dies with the closure.
+    """
+    cache: dict = {}
 
     def resolve(market) -> tuple[int, str]:
         fair_ts = market.fair_ts
+        cached = cache.get(fair_ts)
+        if cached is not None:
+            return cached
         interval = interval_fn(sport, fair_ts, kickoffs_at(fair_ts), tz)
         label = SCHEDULED
         if interval is None:
             # I4's closed form, walking back in `exec_period_s` steps inside the capture window.
+            # The walk starts one step **before** `fair_ts`: that instant was just asked and
+            # answered `None`, and asking it again is a duplicate reconstruction, not a probe.
             label = WALKED_BACK
-            probe = fair_ts
+            probe = fair_ts - timedelta(seconds=exec_period_s)
             while probe >= window_start:
                 interval = interval_fn(sport, probe, kickoffs_at(probe), tz)
                 if interval is not None:
                     break
                 probe -= timedelta(seconds=exec_period_s)
-        if interval is None:
-            return OVERNIGHT_UNANCHORED_S, OVERNIGHT_UNANCHORED
-        return int(interval) + int(tick_budget_s), label
+        answer = ((OVERNIGHT_UNANCHORED_S, OVERNIGHT_UNANCHORED) if interval is None
+                  else (int(interval) + int(tick_budget_s), label))
+        cache[fair_ts] = answer
+        return answer
 
     return resolve
 
@@ -112,7 +129,9 @@ def cadence_allowance_with_label(sport: str, kickoffs_at, tz, *, tick_budget_s: 
                                  interval_fn=interval_for):
     """`(allowance, label)`: the same number, plus how it was reached (I4's labelled fallback).
 
-    The caller records the label on the run's rows; `_fair_stale` reads the number alone.
+    The caller records the label on the run's rows; `_fair_stale` reads the number alone. Both
+    views close over **one** memoised resolver, so asking for the label costs nothing beyond
+    the number the same fair row already resolved.
     """
     resolve = _resolver(sport, kickoffs_at, tz, tick_budget_s=tick_budget_s,
                         exec_period_s=exec_period_s, window_start=window_start,
@@ -163,25 +182,22 @@ class ArmSpec:
     def as_manifest_entry(self) -> dict:
         """What `Manifest.arms` holds (plan choice 3): a canonical dict, not this object.
 
-        `policy` is projected field by field, with the allowance rendered as the fact that
-        there **is** one: the bound callable is a run-time object and hashing its identity
-        would make the manifest of two identical runs differ.
+        `policy` is projected by iterating `dataclasses.fields(HoldingPolicy)` rather than by
+        a hand-written list: a field added to the policy later is then inside the hash by
+        construction instead of being silently absent from it. A callable field is rendered as
+        the fact that there **is** one -- the bound allowance is a run-time object and hashing
+        its identity would make the manifest of two identical runs differ.
         """
+        policy = {}
+        for spec_field in fields(self.policy):
+            value = getattr(self.policy, spec_field.name)
+            policy[spec_field.name] = bool(value) if callable(value) else value
         return {
             "arm_id": self.arm_id,
             "label": self.label,
             "observation_source": self.observation_source,
             "notes": list(self.notes),
-            "policy": {
-                "name": self.policy.name,
-                "stale_allowance_s": self.policy.stale_allowance_s,
-                "rest_to_expiry": self.policy.rest_to_expiry,
-                "per_variant_slots": self.policy.per_variant_slots,
-                "fillability_admission": self.policy.fillability_admission,
-                "join_the_bid": self.policy.join_the_bid,
-                "near_kickoff_only_min": self.policy.near_kickoff_only_min,
-                "cadence_allowance": self.policy.cadence_allowance is not None,
-            },
+            "policy": policy,
         }
 
     def spec_hash(self) -> str:

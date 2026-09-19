@@ -44,8 +44,11 @@ COUNTERFACTUAL_LABEL = (
 
 @dataclass(frozen=True)
 class HoldingPolicy:
-    """The six parameters the alternatives vary. Every default is the baseline's value, which is
-    what makes `HoldingPolicy()` and the live path the same behaviour."""
+    """The six parameters the alternatives vary, plus 6D.1's experiment-only allowance. Every
+    default is the baseline's value, which is what makes `HoldingPolicy()` and the live path the
+    same behaviour: the seventh field (`cadence_allowance`) is set by no live construction and
+    by no registered configuration, and its branch in `plan._fair_stale` is dead while it is
+    `None`."""
 
     name: str = "baseline"
     #: Seconds a fair value may be past its own staleness rule and still be tradeable. None is

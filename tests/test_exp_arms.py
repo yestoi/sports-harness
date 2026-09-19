@@ -314,7 +314,9 @@ def test_a_missed_fetch_does_not_extend_its_own_deadline():
     early = exec_market(fair_ts=fair_ts)
     assert allowance(early) == 400
     assert allowance(early) == 400            # evaluated 20 minutes later: the same number
-    assert seen == [fair_ts, fair_ts]         # and always at fair_ts, never at `now`
+    # Asked at fair_ts, never at `now`, and asked **once**: the resolver is memoised on the
+    # fair row's own instant (fix round 1, Important 4), so the second evaluation reuses it.
+    assert seen == [fair_ts]
 
 
 def test_the_as_of_kickoffs_are_read_at_the_fair_rows_own_instant():
@@ -432,3 +434,43 @@ def test_the_arm_spec_records_every_distinction_and_hashes_them():
     # the same one -- this spec with three notes instead of four.
     changed = dataclasses.replace(spec, notes=spec.notes[:3])
     assert changed.spec_hash() != spec.spec_hash()  # the notes are inside the hash, not beside it
+
+
+def test_the_resolver_is_memoised_on_fair_ts_and_never_reasks_the_same_instant():
+    # Important 4: `_fair_stale` asks this question for every resting order at every retained
+    # instant, and the real binding reads the as-of kickoff snapshots per probe. One
+    # reconstruction per distinct fair row, not per evaluation.
+    seen = []
+
+    def interval_fn(sport, at, kickoffs, tz):
+        seen.append(at)
+        return 120
+
+    allowance = _allowance(interval_fn)
+    first, second = NOW - timedelta(seconds=30), NOW - timedelta(seconds=90)
+    for _ in range(25):
+        assert allowance(exec_market(fair_ts=first)) == 220
+    assert seen == [first]                       # twenty-five evaluations, one resolution
+    assert allowance(exec_market(fair_ts=second)) == 220
+    assert seen == [first, second]               # a different fair row is its own entry
+
+
+def test_the_walk_back_starts_one_step_before_fair_ts_and_is_shared_with_the_label():
+    # The instant `fair_ts` itself was just asked and answered None; asking it again is a
+    # duplicate reconstruction, not a probe (Important 4). With `exec_period_s` = 15 the first
+    # probe is fair_ts - 15 s, and the two views share one cache.
+    seen = []
+
+    def interval_fn(sport, at, kickoffs, tz):
+        seen.append(at)
+        return None if at > NOW - timedelta(seconds=45) else 900
+
+    allowance, label = arms.cadence_allowance_with_label(
+        "nfl", lambda at: [], CT, tick_budget_s=TICK_BUDGET_S, exec_period_s=EXEC_PERIOD_S,
+        window_start=NOW - timedelta(hours=2), interval_fn=interval_fn)
+    market = exec_market(fair_ts=NOW)
+    assert allowance(market) == 1000             # 900 + 100, from the last finite step
+    assert label(market) == arms.WALKED_BACK     # the label costs no second resolution
+    assert seen == [NOW, NOW - timedelta(seconds=EXEC_PERIOD_S),
+                    NOW - timedelta(seconds=2 * EXEC_PERIOD_S),
+                    NOW - timedelta(seconds=3 * EXEC_PERIOD_S)]

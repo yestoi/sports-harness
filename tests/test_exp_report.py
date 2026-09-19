@@ -1,7 +1,12 @@
 """§1.9: two tables, two captions, and a number no reader can mistake for another."""
-import pytest
+from contextlib import contextmanager
+from datetime import datetime, timezone
 
-from harness.experiments.execution_viability import exp_label, report
+import pytest
+import typer
+
+from harness.db.models import ExpRun
+from harness.experiments.execution_viability import cli, exp_label, report
 from harness.experiments.execution_viability.report import PortfolioSumRefused
 
 RUN = "0198e2b0-0000-7000-8000-000000000001"
@@ -98,3 +103,98 @@ def test_the_report_commands_own_statements_run_against_the_schema(db_session):
     for statement in (cli._REPORT_ARMS, cli._REPORT_OUTCOMES, cli._REPORT_HEALTH,
                       cli._REPORT_SPACING, cli._REPORT_GAME_SHARE, cli._REPORT_ALLOCATION):
         assert db_session.execute(statement, {"r": RUN}).all() is not None
+
+
+def test_the_episode_rules_parameters_are_instantiated_for_the_run(capsys):
+    # §1.9(b) (fix round 1, Important 1): the formula alone is not the rule this run cut its
+    # episodes with. `gap_rule_s(120) = max(600, 360) = 600`, and `gap_rule_s(300) = 900`.
+    out = report.render([], [], run_id=RUN, manifest_hash=HASH, cadence_in_force=300)
+    line = [ln for ln in out.splitlines() if "Episode rule parameters" in ln][0]
+    assert "300 s" in line and "900 s" in line
+    assert out.index("Episode rule parameters") < out.index("Registered results")
+
+
+def test_a_run_with_no_cadence_says_so_where_the_parameters_belong():
+    out = report.render([], [], run_id=RUN, manifest_hash=HASH)
+    line = [ln for ln in out.splitlines() if "Episode rule parameters" in ln][0]
+    assert "not supplied" in line
+    assert out.index(line) < out.index("Registered results")
+
+
+def test_the_label_is_a_titled_column_and_no_row_is_wider_than_its_header():
+    out = report.arm_table(ROWS, run_id=RUN, manifest_hash=HASH)
+    lines = [ln for ln in out.splitlines() if "|" in ln]
+    header, body = lines[0], lines[1:]
+    assert report.LABEL_COLUMN in header
+    assert all(ln.count("|") == header.count("|") for ln in body)
+
+
+def test_a_table_of_registered_rows_only_has_no_label_column():
+    out = report.arm_table([r for r in ROWS if r["registered"]], run_id=RUN, manifest_hash=HASH,
+                           exploratory=False)
+    assert report.LABEL_COLUMN not in out
+
+
+def test_the_sensitivities_and_the_interval_are_computed_from_the_per_order_rows():
+    # §1.9(c) (fix round 1, Important 2): the game-weighted number is the mean of the per-game
+    # means, not the order-weighted mean. Two orders on game 7 at 0.02 and 0.04 and one on game
+    # 8 at 0.12: order-weighted 0.06, game-weighted (0.03 + 0.12) / 2 = 0.075.
+    class _Row:
+        def __init__(self, game_id, venue_market_id, side, value):
+            self.game_id, self.venue_market_id = game_id, venue_market_id
+            self.side, self.value = side, value
+
+    rows = [_Row(7, 11, "yes", 0.02), _Row(7, 11, "no", 0.04), _Row(8, 12, "yes", 0.12)]
+    assert cli._weighted(rows, cli._game_of) == "0.075000"
+    # The market-side grouping has three groups, so it is the plain mean of the three.
+    assert cli._weighted(rows, lambda r: (r.venue_market_id, r.side)) == "0.060000"
+    assert cli._weighted([], cli._game_of) is None
+    # A row whose market kept no game clusters on the market, never with every other unknown.
+    assert cli._game_of(_Row(None, 12, "yes", 0.01)) == ("market", 12)
+
+
+def _seed_run(session, *, manifest=None):
+    session.add(ExpRun(run_id=RUN, created_at=datetime(2026, 9, 16, tzinfo=timezone.utc),
+                       manifest_hash=HASH, manifest=manifest or {}, code_sha="a" * 40,
+                       clock_mode="retained_action_instants", status="frozen"))
+    session.flush()
+
+
+def test_the_report_command_runs_end_to_end_and_prints_every_block(db_session, env_settings,
+                                                                   monkeypatch, capsys):
+    # The command's own body, not its help text: the local that holds the outcome rows used to
+    # shadow the `outcomes` **module**, so everything below the tables raised `AttributeError`
+    # on a real run (fix round 1, Critical 1). The §1.1(b) role no test holds is the only
+    # reason this needs a seam: the session is injected, the statements are the shipped ones.
+    _seed_run(db_session, manifest={"opportunity_definition": {"cadence_in_force": 120}})
+
+    @contextmanager
+    def reader(_s):
+        yield db_session
+
+    monkeypatch.setattr(cli.source, "reader", reader)
+    monkeypatch.setattr(cli, "get_settings", lambda: env_settings)
+    cli.report_cmd(run_id=RUN)
+    out = capsys.readouterr().out
+    assert out.splitlines()[0] == cli.EXP_LABEL          # §0.6: the label before any number
+    for block in ("Episode rule parameters", "Registered results", "Exploratory results",
+                  "Charter status", "book health classifications", "common outcome schedule",
+                  "episode sighting kinds"):
+        assert block in out
+    # The run has no `exp_outcome` rows, so the two sensitivities are stated as absent rather
+    # than printed as dashes (fix round 1, Important 2).
+    assert "sensitivities: not supplied" in out
+    assert out.index("Episode rule parameters") < out.index("Exploratory results")
+    assert "gap_rule_s = 600 s" in out                   # max(600, 3 x 120)
+
+
+def test_the_report_command_refuses_a_run_that_was_never_frozen(db_session, env_settings,
+                                                                monkeypatch):
+    @contextmanager
+    def reader(_s):
+        yield db_session
+
+    monkeypatch.setattr(cli.source, "reader", reader)
+    monkeypatch.setattr(cli, "get_settings", lambda: env_settings)
+    with pytest.raises(typer.BadParameter):
+        cli.report_cmd(run_id="0198e2b0-0000-7000-8000-00000000dead")

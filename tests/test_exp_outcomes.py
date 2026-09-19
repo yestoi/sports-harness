@@ -2,7 +2,9 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from harness.db.models import VenueQuote
+from sqlalchemy import text
+
+from harness.db.models import VenueMarket, VenueQuote
 from harness.experiments.execution_viability.outcomes import (HORIZONS, MISSING_REASONS,
                                                               record_outcomes)
 from harness.experiments.execution_viability.storage import ExperimentWriter
@@ -96,7 +98,6 @@ def test_the_rows_are_written_through_the_writer_and_read_back_as_exp_outcome(db
     writer = writer_for(db_session, env_settings)
     record_outcomes(db_session, writer, run_id=RUN, arm_id="A", orders=[_order(5)], now=NOW)
     writer.commit()
-    from sqlalchemy import text
     got = db_session.execute(text(
         "select horizon, value, censored, missing_reason, source_age_s from exp_outcome "
         "where run_id = :r and arm_id = 'A' order by horizon"), {"r": RUN}).all()
@@ -115,7 +116,6 @@ def test_an_order_that_never_filled_has_no_outcome(db_session, env_settings):
 def test_a_market_that_closed_before_the_horizon_names_that_reason(db_session, env_settings):
     # §1.9(a)'s third missing reason: the horizon is unobservable because the market settled
     # first, which is not the same statement as "we have no quote for it".
-    from harness.db.models import VenueMarket
     closed_at = FILLED_AT + timedelta(seconds=600)
     db_session.add(VenueMarket(venue="kalshi", ticker="KXCLOSED-1", event_ticker="KXNFLGAME",
                                series_ticker="KXNFLGAME", market_type="moneyline",
@@ -123,8 +123,7 @@ def test_a_market_that_closed_before_the_horizon_names_that_reason(db_session, e
                                last_seen_at=FILLED_AT, close_time=closed_at))
     db_session.flush()
     market = db_session.execute(
-        __import__("sqlalchemy").text("select id from venue_markets where ticker = 'KXCLOSED-1'")
-    ).scalar()
+        text("select id from venue_markets where ticker = 'KXCLOSED-1'")).scalar()
     seed_mids(db_session, venue_market_id=market, mids={FILLED_AT: Decimal("0.4800")})
     order = _order(7) | {"venue_market_id": market, "ticker": "KXCLOSED-1"}
     rows = record_outcomes(db_session, writer_for(db_session, env_settings), run_id=RUN,
