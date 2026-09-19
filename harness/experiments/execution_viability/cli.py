@@ -10,10 +10,12 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 
 from harness.config.settings import get_settings
 from harness.execution.book import newest_ws_connect
-from harness.experiments.execution_viability import EXP_DB_ROLE, EXP_LABEL, IsolationError
+from harness.experiments.execution_viability import (EXP_DB_ROLE, EXP_LABEL,
+                                                     IsolationError, exp_label)
 from harness.experiments.execution_viability import (adapter, arms, baseline, bookhealth,
-                                                     capture, episodes, liquidity, outcomes,
-                                                     report, source, storage, veto_profile)
+                                                     capture, decision, episodes, forecast,
+                                                     liquidity, outcomes, report, source,
+                                                     storage, veto_profile)
 from harness.logging_setup import configure_logging
 from harness.research import pacing
 
@@ -862,3 +864,274 @@ def observe_cmd(run_id: str = typer.Option(..., "--run-id"),
     if run.dormant:
         print(f"  dormant        {run.dormant}; every scheduled-but-unmade read is labelled "
               f"and the run never retries (§1.6i)")
+
+
+#: §1.3(f)'s proof, counted: how many differences between the recorded slice and an arm's
+#: reproduction the run recorded, and how many of them name a cause. One aggregate on
+#: `ix_exp_mismatch_run (run_id, explained)`.
+_DECIDE_MISMATCHES = text(
+    "select count(*) as n, count(*) filter (where explained) as explained "
+    "from exp_mismatch where run_id = :r")
+
+#: The run's own named limitations (§1.3): what the record cannot answer, by kind. On
+#: `ix_exp_limitation_run (run_id, kind)`.
+_DECIDE_LIMITATIONS = text("select kind, count(*) as n from exp_limitation where run_id = :r "
+                           "group by 1 order by 1")
+
+#: §1.9(a)'s coverage: matured, censored and missing outcomes for the run, as **counts**. No
+#: value is averaged across two arms here - a pooled markout would answer nobody's question.
+_DECIDE_OUTCOME_COVERAGE = text(
+    "select count(*) as rows_, "
+    "count(*) filter (where value is not null and not censored) as matured, "
+    "count(*) filter (where censored) as censored, "
+    "count(*) filter (where missing_reason is not null) as missing "
+    "from exp_outcome where run_id = :r")
+
+#: The 30-minute markout's sign, **per portfolio identity** `(arm, variant)` and never pooled
+#: across two of them (§1.5): the forecast's economics come from one identity's own rows.
+_DECIDE_SIGN = text(
+    "select o.arm_id, o.variant_id as portfolio, count(x.value) as matured, "
+    "avg(x.value) as mean_1800 from exp_outcome x "
+    "join exp_order o on o.id = x.exp_order_id and o.run_id = x.run_id "
+    "where x.run_id = :r and x.horizon = '1800' and x.value is not null group by 1, 2")
+
+#: Arm C's rows (ruling D27): `exp_observation` with `source = 'exp_observer'`, by status.
+#: `credits` is non-zero on exactly one row per call, so `sum(credits)` is the spend and the
+#: count of non-zero rows is the calls made (T7).
+_DECIDE_OBSERVER = text(
+    "select status, count(*) as n, coalesce(sum(credits), 0) as credits, "
+    "count(*) filter (where credits > 0) as calls from exp_observation "
+    "where run_id = :r and source = :src group by 1 order by 1")
+
+#: The registered variant the forecast projects, resolved by **name**: `orders.variant_id` is
+#: the 12-hex config hash, and `sharp_two_sided` is the name that hash is registered under.
+_DECIDE_VARIANT_ID = text("select variant_id from strategy_variants where name = :name")
+
+#: §1.10's first quantity - **observed watched fills**, live facts. A filled order is counted
+#: once however many fill rows it took (`count(distinct o.id)` against `count(f.id)`), replayed
+#: rows are excluded, and only `queue_model` fills count: a snapshot-cross fill is not a rested
+#: maker fill and this forecast is about resting.
+_DECIDE_OBSERVED_FILLS = text(
+    "select count(distinct o.id) as filled_orders, count(f.id) as fill_rows, "
+    "count(distinct vm.game_id) as distinct_games "
+    "from fills f join orders o on o.id = f.order_id "
+    "left join venue_markets vm on vm.id = o.venue_market_id "
+    "where o.variant_id = :v and f.fill_method = 'queue_model' and not f.replay")
+
+#: The window those fills accrued over, and the orders placed in it: the denominator of a rate.
+_DECIDE_OBSERVED_ORDERS = text(
+    "select count(*) as orders, min(placed_at) as first_order, max(placed_at) as last_order "
+    "from orders where variant_id = :v")
+
+
+def _decide_observed(session, variant_id: str | None, *, mature_outcomes: int,
+                     markout_sign: str | None) -> tuple[forecast.Observed, list[str]]:
+    """§1.10's observed base, read from the live tables, with what it could not read named.
+
+    An unregistered variant is not an empty one: the difference is stated rather than rendered
+    as a zero accrual nobody can tell from a measured zero.
+    """
+    if variant_id is None:
+        return (forecast.Observed(days=1.0, mature_outcomes=mature_outcomes,
+                                  markout_sign=markout_sign),
+                [f"the registered variant {forecast.PROJECTED_VARIANT} is not in "
+                 "strategy_variants in this database, so no observed watched fill could be "
+                 "read: the observed base above is empty because it is unread, not because it "
+                 "is a measured zero"])
+    fills = session.execute(_DECIDE_OBSERVED_FILLS, {"v": variant_id}).one()
+    placed = session.execute(_DECIDE_OBSERVED_ORDERS, {"v": variant_id}).one()
+    span = ((placed.last_order - placed.first_order).total_seconds() / 86400.0
+            if placed.first_order and placed.last_order else 0.0)
+    notes: list[str] = []
+    if span <= 0:
+        notes.append("the observed window is shorter than a day (or holds a single order), so "
+                     "the rates above are per day over one day, not a measured daily rate")
+    return (forecast.Observed(
+        orders=int(placed.orders or 0), fills=int(fills.filled_orders or 0),
+        fill_rows=int(fills.fill_rows or 0), distinct_games=int(fills.distinct_games or 0),
+        days=max(span, 1.0), mature_outcomes=mature_outcomes,
+        markout_sign=markout_sign), notes)
+
+
+@exp_app.command("decide")
+def decide_cmd(run_id: str = typer.Option(..., "--run-id"),
+               veto_profile_name: str = typer.Option(
+                   None, "--veto-profile",
+                   help=f"one of {', '.join(pacing.PROFILE_NAMES)}; names the dormant profile "
+                        "this report cites. Turns nothing on."),
+               arm_b_better: bool = typer.Option(
+                   None, "--arm-b-better/--arm-b-not-better",
+                   help="the A-against-B comparison, when the outcomes are mature enough to "
+                        "support one. Omitted is 'unknown', which on its own can only produce "
+                        "'insufficient evidence'.")) -> None:
+    """Render §1.11's decision report for one frozen run (§1.10, §1.11, I11, D16).
+
+    **Recommends; decides nothing.** No setting is written, no policy is adopted and no
+    boundary instant is recorded: production adoption is §0.14a's dated decision and the pacing
+    profile's activation is §0.14c's, and both questions are printed here unanswered.
+
+    Every number comes from the record: the run's mismatches and limitations, its arms' order
+    and fill counts, the common outcome schedule's coverage, the book-health classifications,
+    arm C's own `exp_observation` rows, and - for §1.10's observed base - the live watched
+    `queue_model` fills of the registered `sharp_two_sided` variant. An empty `exp_outcome` is
+    reported as an **unavailable** outcome, never as a zero markout (§1.9a).
+
+    The rendered text is the report 6D.1's evidence is judged on; it is placed under
+    `docs/superpowers/autopilot/reports/` from this command's output, never hand-written.
+    """
+    configure_logging()
+    # §0.6: the label first, after the arguments are validated and before any number.
+    print(EXP_LABEL)
+    if veto_profile_name is not None and veto_profile_name not in pacing.PROFILE_NAMES:
+        raise typer.BadParameter(
+            f"--veto-profile must name one of {', '.join(pacing.PROFILE_NAMES)}")
+    # Imported here rather than at module scope for the reason `exp observe` documents:
+    # `observer.py` registers a pass at import and `harness/cli.py` imports this module in
+    # every `harness` process (fix round 1, Important 4).
+    from harness.experiments.execution_viability import observer
+
+    now = datetime.now(timezone.utc)
+    s = get_settings()
+    with source.reader(s) as session:
+        run = session.execute(_EXP_RUN_MANIFEST, {"r": run_id}).first()
+        if run is None:
+            raise typer.BadParameter(
+                f"no exp_run row for {run_id}: a decision report is rendered for a frozen run "
+                "(§1.2), never for a run that was never recorded")
+        mismatches = session.execute(_DECIDE_MISMATCHES, {"r": run_id}).one()
+        limitations = session.execute(_DECIDE_LIMITATIONS, {"r": run_id}).all()
+        arm_rows = session.execute(_REPORT_ARMS, {"r": run_id}).all()
+        coverage = session.execute(_DECIDE_OUTCOME_COVERAGE, {"r": run_id}).one()
+        signs = session.execute(_DECIDE_SIGN, {"r": run_id}).all()
+        health = session.execute(_REPORT_HEALTH, {"r": run_id}).all()
+        observer_rows = session.execute(
+            _DECIDE_OBSERVER, {"r": run_id, "src": observer.OBSERVER_SOURCE}).all()
+        variant_id = session.execute(
+            _DECIDE_VARIANT_ID, {"name": forecast.PROJECTED_VARIANT}).scalar()
+        # §1.10's economics: one portfolio identity's own sign, never a pooled average (§1.5).
+        # Arm A is the baseline the continuation scenario projects, so its rows are the ones
+        # the observed base carries.
+        baseline_arm = next((row for row in signs
+                             if row.arm_id == "A" and row.portfolio == variant_id), None)
+        markout_sign = None
+        if baseline_arm is not None and baseline_arm.matured:
+            mean = float(baseline_arm.mean_1800)
+            markout_sign = "positive" if mean > 0 else "negative" if mean < 0 else "flat"
+        observed, observed_notes = _decide_observed(
+            session, variant_id,
+            mature_outcomes=int(baseline_arm.matured) if baseline_arm is not None else 0,
+            markout_sign=markout_sign)
+
+    # §1.3(f): the proof is the mismatch count **and** its resolution, never one of them.
+    resolved = int(mismatches.n or 0) == int(mismatches.explained or 0)
+    baseline_lines = [
+        f"mismatches: {mismatches.n} recorded, {mismatches.explained} explained with a named "
+        f"cause ({'all resolved' if resolved else 'unresolved differences remain'}); a "
+        "mismatch this run could not explain bounds every arm number below (§1.3f).",
+        f"clock mode: {(run.manifest or {}).get('clock_mode', '(not in the manifest)')}; "
+        f"manifest hash {run.manifest_hash[:12]}, which every resume was refused against "
+        "(§1.2).",
+        "isolation: every row of this run was written by §1.1(c)'s writer under the "
+        f"{EXP_DB_ROLE} role, whose INSERT privileges `harness exp isolation-check` reads back "
+        "from the server (§3 row 2).",
+    ]
+    baseline_lines += ([f"limitation: {row.kind} x{row.n}" for row in limitations]
+                       or ["limitations: no exp_limitation row for this run."])
+
+    # §1.9(d)'s rows, one per portfolio identity. Not summed (§1.5): two identities are two
+    # lines here, exactly as `report.arm_table` prints them.
+    arm_lines = [f"arm {row.arm_id} / {row.portfolio}: {row.orders} orders, {row.fills} filled, "
+                 f"{row.partial_fills} partially filled, {row.markets} markets, "
+                 f"{row.contracts} contracts, {row.capacity_exclusions} capacity exclusions"
+                 for row in arm_rows] or [
+        "no exp_order row for this run: neither arm produced a comparable result."]
+    arm_lines.append(
+        "no registered variant's recorded performance is in these lines: every one of them is "
+        "exploratory, and `harness exp report --run-id <run>` prints them under §1.9's "
+        "two-table contract with the exp_label on every exploratory cell (§0.10, §1.9e).")
+    arm_ids = {row.arm_id for row in arm_rows}
+
+    # Arm C (ruling D27): its rows are `exp_observation` rows with `source = 'exp_observer'`,
+    # not an `arm_id`, so its result is its own counters or the reason it never ran (§1.6h, §9).
+    if observer_rows:
+        spend = sum(int(row.credits) for row in observer_rows)
+        calls = sum(int(row.calls) for row in observer_rows)
+        by_status = ", ".join(f"{row.status} x{row.n}" for row in observer_rows)
+        arm_c = (f"measured: {calls} calls for {spend} credits at "
+                 f"{observer.CREDITS_PER_CALL} credits a call, on the "
+                 f"{s.exp_observe_interval_s} s interval; rows by status: {by_status}. The "
+                 "stored observation body is a canonical re-serialisation, not the wire bytes, "
+                 "so body_sha256 identifies the parsed content rather than the response (D33).")
+    else:
+        arm_c = ("unavailable: this run has no exp_observation row with source "
+                 f"'{observer.OBSERVER_SOURCE}', so arm C collected nothing. `harness exp "
+                 "observe --run-id <run>` prints §4.6's checklist and the reason it refuses; no "
+                 "tier is bought and no cap is raised (§1.6h), and no faster-history "
+                 "observation is invented in its place.")
+
+    health_lines = [f"{row.classification}: {row.n}" for row in health] or [
+        "no exp_book_health row for this run: `harness exp book-health --ticker <t> --persist` "
+        "classifies the intervals and names the cause of each (§1.7)."]
+    matured = int(coverage.matured or 0)
+    health_lines.append(
+        f"fresh-outcome coverage: {coverage.rows_} outcome rows, {matured} matured, "
+        f"{coverage.censored} censored, {coverage.missing} missing over the common schedule "
+        f"{', '.join(outcomes.HORIZONS)}."
+        + ("" if coverage.rows_ else " An empty exp_outcome is an unavailable outcome, never a "
+                                     "zero markout: nothing has recorded this run's outcomes "
+                                     "(§1.9a)."))
+    health_lines += [f"caveat: {caveat}" for caveat in bookhealth.CAVEATS]
+
+    # Arm B's counterfactual fills for the **same** portfolio identity: an exploratory estimate,
+    # labelled, and never added to the observed count (§1.10).
+    b_row = next((row for row in arm_rows
+                  if row.arm_id == "B" and row.portfolio == variant_id), None)
+    a_row = next((row for row in arm_rows
+                  if row.arm_id == "A" and row.portfolio == variant_id), None)
+    exploratory = forecast.Exploratory(
+        fills=int(b_row.fills) if b_row is not None else 0,
+        orders=int(b_row.orders) if b_row is not None else 0,
+        days=observed.days, label=f"[{exp_label(run_id, 'B', run.manifest_hash)}]",
+        arm_c=arm_c)
+    forecast_text = "\n".join(
+        [forecast.render_forecast(forecast.project(observed, exploratory))]
+        + [f"  note: {note}" for note in observed_notes])
+
+    veto_lines: list[str] = []
+    if veto_profile_name is None:
+        veto_lines.append(
+            "no profile was named for this render; `harness exp veto-profile --name <name> "
+            "[--preflight --since ... --until ...]` prints the profile, its hash, §0.8's "
+            "amendment record and §0.14c's question.")
+    else:
+        profile = pacing.load_profile(veto_profile_name)
+        veto_lines.append(f"profile {profile.name}, hash {profile.profile_hash()}; §0.8's "
+                          f"amendment record is prepared as veto-pacing-"
+                          f"{profile.profile_hash()[:12]}, with its boundary fields empty.")
+        veto_lines.append(f"claim order in force today: {veto_profile.CLAIM_ORDER_BEFORE}")
+        veto_lines.append("claim order under the profile, not in force: "
+                          f"{veto_profile.CLAIM_ORDER_AFTER}")
+    veto_lines.append(
+        f"live setting: veto_pacing_profile={s.veto_pacing_profile!r}; the reservation check is "
+        "a no-op while it is None, and this command writes no setting.")
+    veto_lines.append(
+        f"caps unchanged: {s.veto_daily_usd_cap} USD a day and {s.veto_weekly_usd_cap} USD an "
+        "ISO week, enforced by the same atomic reservation; a profile changes only when a "
+        "cap binds.")
+
+    better = None if arm_b_better is None else bool(arm_b_better)
+    if better is None and a_row is not None and b_row is not None and matured:
+        better = int(b_row.fills) > int(a_row.fills)
+    recommendation, why = decision.recommend(
+        comparable_arms=len(arm_ids),
+        accrual_identified=observed.distinct_games >= forecast.IDENTIFIED_MIN_GAMES,
+        mature_outcomes=matured, markout_sign=markout_sign, baseline_resolved=resolved,
+        arm_b_better=better)
+    evidence = decision.Evidence(
+        baseline_proof="\n".join(f"- {line}" for line in baseline_lines),
+        arm_results="\n".join(f"- {line}" for line in arm_lines),
+        book_health="\n".join(f"- {line}" for line in health_lines),
+        veto_pacing="\n".join(f"- {line}" for line in veto_lines),
+        forecast=forecast_text, recommendation=recommendation, arm_c=arm_c, reason=why,
+        run_id=run_id, manifest_hash=run.manifest_hash)
+    print(decision.render(evidence, now=now))
